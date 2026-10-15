@@ -1,0 +1,12 @@
+host/dmhost
+host/*.dSYM/
+*.bin
+*.pkl
+__pycache__/
+# 著色器翻譯工具的編譯中間產物（dotnet 在源碼目錄旁生成）
+gfx/tools/dmsh_xlate/obj/
+gfx/tools/dmsh_xlate/bin/
+tools/nx_extract/obj/
+tools/nx_extract/bin/
+third_party/ryujinx/**/obj/
+third_party/ryujinx/**/bin/

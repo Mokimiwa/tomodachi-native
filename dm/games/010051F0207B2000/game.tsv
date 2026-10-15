@@ -1,0 +1,56 @@
+# 朋友收集 夢想生活（Switch，基礎版 v0）的遊戲檔案：起機中，內存與 NVN 常數暫沿用馬力歐的值，等起機實測後再改
+# Game profile of Tomodachi Life: Living the Dream (Switch, base game v0): in bring-up; the memory and NVN constants are still Mario's until the bring-up measures them
+# 格式：鍵 <TAB> 值；一個鍵多個值用空格分隔；build 每版一行；注釋只能獨佔一行。改內存 / NVN 常數後重編宿主；改著色器相關的鍵後按 AGENTS.md 走翻譯鏈流程
+# Format: key <TAB> value; several values of one key are separated by spaces; one build row per version; comments must be on their own line. Rebuild the host after changing memory / NVN constants; after changing shader-related keys follow the chain procedure in AGENTS.md
+
+# ---- 身份 | Identity ----
+title_id	010051F0207B2000
+# svcGetInfo(ProgramId) 報給遊戲的值（運行時 DM_PROGRAM_ID 可改） | the value svcGetInfo(ProgramId) reports to the game (DM_PROGRAM_ID overrides it at run time)
+program_id	010051F0207B2000
+
+# ---- App ----
+name	Tomodachi Life: Living the Dream
+ipa	TomodachiLife.ipa
+app_category	public.app-category.simulation-games
+
+# ---- 版本 | Versions ----
+# build <版本> <顯示版本> <模塊>=<構建號>…：NSP 腳本只認這些構建；SDK 20.5.3，比馬力歐的 16 新
+# build <version> <display version> <module>=<build ID>...: the NSP script accepts only these builds; SDK 20.5.3, newer than Mario's 16
+build	v0	1.0.0	main=56bf85bd535413464cb75bb6c2683b67	sdk=651781821e2c2e0b2bdfe905e8676f56
+package	v0
+shader_versions	v0
+
+# ---- 文件 | Files ----
+modules	main sdk
+# 與馬力歐同一套 EPD 引擎的資源佈局（ResourceSizeTable 在這裡） | same EPD engine resource layout as Mario (the ResourceSizeTable lives here)
+romfs_marker	System/Resource
+zip_store	.zs:.bwav:.metallib
+
+# ---- 內存（hle_svc.c） | Memory (hle_svc.c) ----
+# 沒有馬力歐那種 HeapDef（VirtualAddressMemory）：nninitStartup 把應用池幾乎整塊設成堆（SetHeapSize 0xc9400000，約 3.14 GB）。
+# 別名區只需裝下 SDK 的節點區（0x3fe00000）加餘量：別名 1.125 GB、棧 256 MB，堆區 3.375 GB；總量仍是真機跑通的 5 GB
+# No HeapDef (VirtualAddressMemory) as in Mario: nninitStartup makes almost the whole application pool the heap (SetHeapSize 0xc9400000, about 3.14 GB).
+# The alias region only needs to hold the SDK's node area (0x3fe00000) plus slack: alias 1.125 GB, stacks 256 MB, heap region 3.375 GB; the total is still the 5 GB proven on a phone
+mem_reserve	0x140000000
+mem_alias	0x48000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+
+# ---- NVN 驅動常量段：暫用馬力歐的值，拆出著色器後按全庫普查核對 | NVN driver constant segments: Mario's values for now, to be checked by a census over all shaders once they are split out ----
+nvn_tex_base	0x20
+nvn_tex_slots	32
+nvn_samp_base	0x568
+nvn_img_base	0x120
+nvn_img_slots	8
+nvn_ssbo_bases	vs=0x110 ps=0x510 cs=0x310
+
+# ---- 著色器拆分（shader_split.py） | Shader split (shader_split.py) ----
+# 來源組：GameUber 的 bfsha 是主體；agl / gsys 的 sharcb；特效、版面，其餘 Shader/ 下的 sarc 歸 game
+# Source groups: the GameUber bfsha is the bulk; agl / gsys sharcb; effects, layouts, and the other sarc files under Shader/ go to game
+shader_groups	/Shader/GameUber=GameUber .sharcb=agl /Effect/=effect /Layout/=layout /Shader/=game
+shader_note	朋友收集著色器
+
+# ---- 時鐘 | Clock ----
+# 網絡時鐘按「聯網校過一次」答：朋友收集要它可用，否則先警告時間可能改變，再卡在「到 HOME 設定裡調時間」
+# The network clock is answered as "synced once": Tomodachi Life needs it, otherwise it warns that the time may change and then stays at "fix the time in the HOME settings"
+network_clock	synced

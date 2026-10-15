@@ -1,0 +1,59 @@
+# Key map for the Mac app. One binding per line: "<source> <Switch control>".
+# Lines starting with # are off. To change a binding, remove the # and edit the right-hand side.
+# Changes apply the next time the game window comes to the front.
+#
+# Switch controls: A B X Y L R ZL ZR Plus Minus Up Down Left Right LS RS
+#   Sticks: StickLUp StickLDown StickLLeft StickLRight (add =0.5 for half tilt), StickRUp and so on,
+#           StickL / StickR for mouse and trackpad movement.
+#   Touch=x/y touches that point of the 1280x720 screen; Pointer touches where the mouse is.
+#   Join controls with + (A+B) to press several at once; use - to turn a source off.
+# Key names follow US keyboard positions: A-Z, 0-9, Return, Tab, Space, Escape, Delete, Up Down Left Right,
+#   Minus Equal LeftBracket RightBracket Backslash Semicolon Quote Comma Period Slash Grave.
+
+# ---- Keyboard (defaults) ----
+# key:J A
+# key:K B
+# key:U X
+# key:I Y
+# key:W StickLUp
+# key:A StickLLeft
+# key:S StickLDown
+# key:D StickLRight
+# key:P StickRUp
+# key:L StickRLeft
+# key:Semicolon StickRDown
+# key:Quote StickRRight
+# key:Up Up
+# key:Down Down
+# key:Left Left
+# key:Right Right
+# key:Q L
+# key:E R
+# key:Z ZL
+# key:C ZR
+# key:F LS
+# key:G RS
+# key:Return Plus
+# key:Tab Minus
+# Example: Space as A
+# key:Space A
+
+# ---- Mouse (defaults) ----
+# Moving the mouse moves the game's hand. Map it to StickR to turn the camera instead, or - to turn it off.
+# mouse:Move StickL
+# Left button A, right button B, middle button X. Pointer on the left button touches the screen where you click.
+# mouse:Left A
+# mouse:Right B
+# mouse:Other X
+
+# ---- Trackpad (defaults) ----
+# Two-finger scroll (or the scroll wheel) and two-finger rotate turn the camera.
+# trackpad:Scroll StickR
+# trackpad:Rotate StickR
+# Pinch in for ZL, out for ZR. Swipe with three fingers for L / R (three-finger swipes must be on in System Settings).
+# pinch:In ZL
+# pinch:Out ZR
+# swipe:Left L
+# swipe:Right R
+# swipe:Up -
+# swipe:Down -

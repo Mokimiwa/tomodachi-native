@@ -1,0 +1,7 @@
+# 由原版表生成（dm/host/Makefile 構建時從玩家自己的遊戲文件生成，不進倉庫）
+dm_vault_tab.h
+dm_hud_exp.h
+dm_bright_levels.inc
+*.h.tmp
+*.inc.tmp
+gen/

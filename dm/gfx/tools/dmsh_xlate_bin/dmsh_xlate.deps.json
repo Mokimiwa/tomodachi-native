@@ -1,0 +1,178 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "dmsh_xlate/1.0.0": {
+        "dependencies": {
+          "Ryujinx.Common": "1.0.0",
+          "Ryujinx.Graphics.Shader": "1.0.0"
+        },
+        "runtime": {
+          "dmsh_xlate.dll": {}
+        }
+      },
+      "Gommon/2.8.1.2": {
+        "runtime": {
+          "lib/net9.0/Gommon.dll": {
+            "assemblyVersion": "2.8.1.2",
+            "fileVersion": "2.8.1.2"
+          }
+        }
+      },
+      "Humanizer/3.0.10": {
+        "dependencies": {
+          "Humanizer.Core.zh-Hant": "3.0.10"
+        }
+      },
+      "Humanizer.Core/3.0.10": {
+        "runtime": {
+          "lib/net10.0/Humanizer.dll": {
+            "assemblyVersion": "3.0.0.0",
+            "fileVersion": "3.0.10.37104"
+          }
+        }
+      },
+      "Humanizer.Core.zh-Hant/3.0.10": {
+        "dependencies": {
+          "Humanizer.Core": "3.0.10"
+        }
+      },
+      "Microsoft.IO.RecyclableMemoryStream/3.0.1": {
+        "runtime": {
+          "lib/net6.0/Microsoft.IO.RecyclableMemoryStream.dll": {
+            "assemblyVersion": "3.0.1.0",
+            "fileVersion": "3.0.1.0"
+          }
+        }
+      },
+      "MsgPack.Cli/1.0.1": {
+        "dependencies": {
+          "System.CodeDom": "4.4.0"
+        },
+        "runtime": {
+          "lib/netstandard2.0/MsgPack.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.228.0"
+          }
+        }
+      },
+      "System.CodeDom/4.4.0": {
+        "runtime": {
+          "lib/netstandard2.0/System.CodeDom.dll": {
+            "assemblyVersion": "4.0.0.0",
+            "fileVersion": "4.6.25519.3"
+          }
+        }
+      },
+      "Ryujinx.Common/1.0.0": {
+        "dependencies": {
+          "Gommon": "2.8.1.2",
+          "Humanizer": "3.0.10",
+          "Microsoft.IO.RecyclableMemoryStream": "3.0.1",
+          "MsgPack.Cli": "1.0.1"
+        },
+        "runtime": {
+          "Ryujinx.Common.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "Ryujinx.Graphics.Shader/1.0.0": {
+        "dependencies": {
+          "Ryujinx.Common": "1.0.0",
+          "Spv.Generator": "1.0.0"
+        },
+        "runtime": {
+          "Ryujinx.Graphics.Shader.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "Spv.Generator/1.0.0": {
+        "runtime": {
+          "Spv.Generator.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "dmsh_xlate/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Gommon/2.8.1.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-0P5GohVv5/mr6PXUqD2oY7d2eWebcPdzNK4YVW+zuByenqwJzAnnC/ISsISvInQxt8WrrA8KETxtaM8pyJLxzw==",
+      "path": "gommon/2.8.1.2",
+      "hashPath": "gommon.2.8.1.2.nupkg.sha512"
+    },
+    "Humanizer/3.0.10": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-13+6RiWdpVCzSn2SSEd1hAIr/UHScNdLCUhRgjvI60UcD5u3vXu3u1/Z+74OcHWum1itjiBTjYXgJKQna1jTgw==",
+      "path": "humanizer/3.0.10",
+      "hashPath": "humanizer.3.0.10.nupkg.sha512"
+    },
+    "Humanizer.Core/3.0.10": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-yZIhtw8sYuvsONzQbZxWpR60tMWYHXoo0DL6nyOqSFiU5POjBTSEyWFpTQtJEZuy+oqiYTXKXY/Mjx7KnqIQFw==",
+      "path": "humanizer.core/3.0.10",
+      "hashPath": "humanizer.core.3.0.10.nupkg.sha512"
+    },
+    "Humanizer.Core.zh-Hant/3.0.10": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-KI5Nv82v9diPBxcBAwIAvZQHjSrDy7He0atnzdZghS+QchHwlkPKhTyEzVSbOZdD42RxCX1ArMiL864A2iw34Q==",
+      "path": "humanizer.core.zh-hant/3.0.10",
+      "hashPath": "humanizer.core.zh-hant.3.0.10.nupkg.sha512"
+    },
+    "Microsoft.IO.RecyclableMemoryStream/3.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-s/s20YTVY9r9TPfTrN5g8zPF1YhwxyqO6PxUkrYTGI2B+OGPe9AdajWZrLhFqXIvqIW23fnUE4+ztrUWNU1+9g==",
+      "path": "microsoft.io.recyclablememorystream/3.0.1",
+      "hashPath": "microsoft.io.recyclablememorystream.3.0.1.nupkg.sha512"
+    },
+    "MsgPack.Cli/1.0.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-od0WujAAuPuRLoGfGNfE2iRPP7Kj+o174Oed2uirT03/Dp4rkccnEIqQl/QRHjly79sMwh6xKaIVsLqYwWtiHA==",
+      "path": "msgpack.cli/1.0.1",
+      "hashPath": "msgpack.cli.1.0.1.nupkg.sha512"
+    },
+    "System.CodeDom/4.4.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-2sCCb7doXEwtYAbqzbF/8UAeDRMNmPaQbU2q50Psg1J9KzumyVVCgKQY8s53WIPTufNT0DpSe9QRvVjOzfDWBA==",
+      "path": "system.codedom/4.4.0",
+      "hashPath": "system.codedom.4.4.0.nupkg.sha512"
+    },
+    "Ryujinx.Common/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Ryujinx.Graphics.Shader/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Spv.Generator/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

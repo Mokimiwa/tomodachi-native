@@ -1,0 +1,13 @@
+<!-- NSP 解包工具（含更新包合併）：LibHac 讀 NCA，補丁 NCA 疊在基礎 NCA 上取合併後的 RomFS。hactool 讀不了新式補丁 NCA（報 Invalid BKTR layout!）。 -->
+<!-- NSP extraction tool (including update merging): LibHac reads the NCAs and layers the patch NCA over the base NCA to get the merged RomFS. hactool cannot read newer patch NCAs (it reports Invalid BKTR layout!). -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="LibHac" Version="0.19.0" />
+  </ItemGroup>
+</Project>
