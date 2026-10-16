@@ -6,7 +6,7 @@
 // 宿主做三件事：
 //   1. 接管 GetAudioRendererWorkBufferSize / OpenAudioRenderer：參數改成 CPU + 手動後調 SDK 原函數（工作區大小按改後的參數算）；
 //   2. 渲染線程（宿主起的客體線程）：輸出端每放回一塊 5 ms 緩衝就渲一幀，節奏跟著聲卡時鐘走；
-//   3. 接管 AudioRendererImpl::ExecuteAudioRendererRendering（經 PLT 調到）：照原函數生成命令、交 CommandListProcessor 處理，
+//   3. 接管 AudioRendererImpl::ExecuteAudioRendererRendering（經 PLT 調到；SDK 20 是 AudioRenderSystem 那一版）：照原函數生成命令（持更新鎖）、交 CommandListProcessor 處理，
 //      再從命令表裡找 DeviceSink 命令（CPU 處理器對它是空操作），把它的輸入混音緩衝（int32，16 位範圍）夾成 int16 立體聲交給 AudioOut 輸出（hle_audio.c）。
 // 命令表格式（SDK 16）：頭 +0x04 命令數、+0x08 混音緩衝地址、+0x10 緩衝數、+0x14 每幀採樣數、+0x18 採樣率，命令從 +0x20 起；
 //   每條命令 +0x00 魔數 0xcafebabe、+0x04 啓用、+0x05 命令號（DeviceSink = 0x13）、+0x06 大小；DeviceSink +0x128 上採樣緩衝、+0x130 輸入數、+0x134 輸入下標（s16）。
@@ -18,7 +18,7 @@
 // The host does three things:
 //   1. Takes over GetAudioRendererWorkBufferSize / OpenAudioRenderer: switches the parameter to CPU + manual and calls the SDK original (the work buffer size follows the modified parameter);
 //   2. A render thread (a guest thread started by the host): renders one frame whenever the output hands back a 5 ms buffer, so pacing follows the sound card clock;
-//   3. Takes over AudioRendererImpl::ExecuteAudioRendererRendering (reached through the PLT): generates commands and runs CommandListProcessor like the original,
+//   3. Takes over AudioRendererImpl::ExecuteAudioRendererRendering (reached through the PLT; on SDK 20 the AudioRenderSystem version): generates commands (holding the update lock) and runs CommandListProcessor like the original,
 //      then finds the DeviceSink command in the command list (a no-op for the CPU processor) and clamps its input mix buffers (int32 holding 16-bit range) to int16 stereo for AudioOut (hle_audio.c).
 // Command list format (SDK 16): header +0x04 command count, +0x08 mix buffer address, +0x10 buffer count, +0x14 samples per frame, +0x18 sample rate, commands from +0x20;
 //   each command +0x00 magic 0xcafebabe, +0x04 enabled, +0x05 command ID (DeviceSink = 0x13), +0x06 size; DeviceSink +0x128 upsampler buffer, +0x130 input count, +0x134 input indices (s16).
@@ -158,60 +158,59 @@ static int capture(const uint8_t *cl, int16_t *dst, int sink) {
 // Render one frame (generate commands + CPU processing); dst = output (stereo int16, *nout samples). The two callers (render thread, catch-up) are serialized by a host lock: they share one command buffer
 static pthread_mutex_t g_render_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t g_updates, g_renders, g_catchups;
-static int sdk20_mode(void) {
-    static int v = -1;
-    if (v < 0) { v = !guest_sym("_ZNK2nn5audio6server17AudioRenderSystem16GetExecutionModeEv"); if (v) LOG("audren：SDK 20 渲染器，由 SDK 自己渲，宿主從命令表取 DeviceSink 輸出"); }
-    return v;
-}
-// SDK 20 的 AudioRenderSystem::ExecuteAudioRendererRendering（sdk 20.5.3 0x229bdc）：+0x48 / +0x4c 查執行模式與渲染設備，命令緩衝工作區取自
-// +0xf8（地址）/ +0x100（大小），GenerateCommand 把命令表寫在工作區開頭，再交 CommandListProcessor 處理。渲完從同一處讀命令表，按 SDK 16 的格式取 DeviceSink 輸出；
-// 格式對不上時 capture 記紅字並給 0 個採樣，這裡退回靜音
-// SDK 20's AudioRenderSystem::ExecuteAudioRendererRendering (sdk 20.5.3 0x229bdc): +0x48 / +0x4c check the execution mode and rendering device, the command buffer work area comes from
-// +0xf8 (address) / +0x100 (size), GenerateCommand writes the command list at the start of the work area, and CommandListProcessor processes it. After rendering, read the command list from the same place and take the DeviceSink output in the SDK 16 format;
-// if the format does not match, capture logs a red line and yields 0 samples, and this falls back to silence
-enum { SYS20_CMDBUF = 0xf8 };
-static Result sdk20_exec(uint8_t *sys, int16_t *dst, int *nout) {
-    static Result (*orig)(void *); if (!orig) orig = gsym("_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv");
-    pthread_mutex_lock(&g_render_mu);
-    Result r = orig(sys); atomic_fetch_add(&g_renders, 1);
-    int n = 0; const uint8_t *cl = *(const uint8_t *const *)(sys + SYS20_CMDBUF);
-    if (dst && !r && cl) n = capture(cl, dst, 0x14);
-    pthread_mutex_unlock(&g_render_mu);
-    if (dst) { if (!n) { memset(dst, 0, 240 * 2 * sizeof *dst); n = 240; } *nout = n; }
-    return r;
-}
+// SDK 20（朋友收集，sdk 20.5.3）的 AudioRenderSystem 換了佈局：取模式 / 設備 / 命令緩衝的成員函數都內聯掉了，GenerateCommand 改收 Span<std::byte> 並回 Span
+//   （x0 起址、x1 長，就是生成出的命令表；0x2293cc 只記耗時再調 GenerateCommandImpl，自己不拿鎖）。原版 ExecuteAudioRendererRendering（0x229bdc）查 +0x48 渲染設備、
+//   +0x4c 執行模式（都要是 1），從 +0xf8 / +0x100 取命令緩衝起址 / 長，生成命令時不拿更新鎖；遊戲線程的 RequestUpdate（UpdateImpl 0x2290f4）持 +0x2d0 的互斥鎖改聲部 / 效果狀態，
+//   而宿主的渲染線程與遊戲線程並行。所以 SDK 20 也照原函數的步驟在這裡做，生成時持同一把鎖（同 SDK 16 的 +0x1f0、同真機的系統線程），處理在鎖外。
+//   按有沒有 Span 版 GenerateCommand 認佈局。移植自上游 nxnative ff74840（在曠野之息 1.9.0 上測得同樣的位移）
+// SDK 20's AudioRenderSystem (Tomodachi Life, sdk 20.5.3) has another layout: the member functions for mode / device / command buffer are inlined, and GenerateCommand takes a Span<std::byte> and returns a Span
+//   (x0 start, x1 length: the generated command list; 0x2293cc only records timing and calls GenerateCommandImpl, taking no lock itself). The original ExecuteAudioRendererRendering (0x229bdc) checks the rendering device at +0x48
+//   and the execution mode at +0x4c (both must be 1), takes the command buffer start / length from +0xf8 / +0x100, and generates without the update lock; the game thread's RequestUpdate (UpdateImpl 0x2290f4) changes voice / effect state holding the mutex at +0x2d0,
+//   and the host's render thread runs in parallel with the game thread. So on SDK 20 the original's steps are done here too, generating under that same lock (like +0x1f0 on SDK 16 and like the hardware's system thread), processing outside it.
+//   The layout is recognized by the presence of the Span version of GenerateCommand. Ported from upstream nxnative ff74840 (which measured the same offsets on Breath of the Wild 1.9.0)
+enum { SYS20_DEVICE = 0x48, SYS20_MODE = 0x4c, SYS20_CMDBUF = 0xf8, SYS20_CMDBUF_SIZE = 0x100, SYS20_UPDATE_MU = 0x2d0, SYS16_UPDATE_MU = 0x1f0 };
+typedef struct { uint8_t *p; size_t n; } span_t;   // nn::Span<std::byte>：x0 起址、x1 長 | nn::Span<std::byte>: x0 start, x1 length
 static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     static int (*mode)(void *), (*device)(void *); static uint8_t *(*cbuf)(void *); static size_t (*cbsz)(void *), (*gen)(void *, void *, size_t);
-    static void (*tmax)(void *, uint32_t), (*setup)(void *, const void *, size_t), (*process)(void *), (*lock)(void *), (*unlock)(void *);
-    // SDK 20（朋友收集）：AudioRenderSystem 自己的 ExecuteAudioRendererRendering 在 CPU 模式下就把「生成命令 + CPU 處理」整套在進程裡做完（sdk 20.5.3 0x229bdc），
-    // 而上面用的幾個取值函數已被內聯掉、GenerateCommand 改收 Span。所以 SDK 20 上直接調它渲一幀（追幀也這樣，保證效果初始化：缺了這一幀
-    // 燈光限幅器的狀態沒建，ApplyLightLimiterEffect 讀空指針，同 docs/agents/03）。輸出從它留下的命令表取（sdk20_exec）
-    // SDK 20 (Tomodachi Life): AudioRenderSystem's own ExecuteAudioRendererRendering does the whole "generate commands + CPU processing" in-process in CPU mode (sdk 20.5.3 0x229bdc),
-    // while the getters used above were inlined and GenerateCommand now takes a Span. So on SDK 20 it is called directly to render a frame (catch-up frames too, so effects get initialized: without that frame
-    // the light limiter's state is never built and ApplyLightLimiterEffect reads a null pointer, as in docs/agents/03). The output is taken from the command list it leaves behind (sdk20_exec)
-    if (sdk20_mode()) return sdk20_exec(sys, dst, nout);
+    static span_t (*gen20)(void *, void *, size_t); static size_t mu_off;
+    static void (*ctor)(void *), (*tmax)(void *, uint32_t), (*setup)(void *, const void *, size_t), (*process)(void *), (*lock)(void *), (*unlock)(void *);
     if (!process) {
         lock = gsym("_ZN2nn2os12SdkMutexType4LockEv"); unlock = gsym("_ZN2nn2os12SdkMutexType6UnlockEv");
-        mode = gsym("_ZNK2nn5audio6server17AudioRenderSystem16GetExecutionModeEv"); device = gsym("_ZNK2nn5audio6server17AudioRenderSystem18GetRenderingDeviceEv");
-        cbuf = gsym("_ZNK2nn5audio6server17AudioRenderSystem26GetCommandBufferWorkBufferEv"); cbsz = gsym("_ZNK2nn5audio6server17AudioRenderSystem30GetCommandBufferWorkBufferSizeEv");
-        gen = gsym("_ZN2nn5audio6server17AudioRenderSystem15GenerateCommandEPvm");
+        gen20 = guest_sym("_ZN2nn5audio6server17AudioRenderSystem15GenerateCommandENS_4SpanISt4byteEE");
+        if (gen20) ctor = gsym("_ZN2nn5audio3dsp20CommandListProcessorC1Ev");   // 原函數先在棧上構造處理器 | the original constructs the processor on its stack first
+        else {
+            mode = gsym("_ZNK2nn5audio6server17AudioRenderSystem16GetExecutionModeEv"); device = gsym("_ZNK2nn5audio6server17AudioRenderSystem18GetRenderingDeviceEv");
+            cbuf = gsym("_ZNK2nn5audio6server17AudioRenderSystem26GetCommandBufferWorkBufferEv"); cbsz = gsym("_ZNK2nn5audio6server17AudioRenderSystem30GetCommandBufferWorkBufferSizeEv");
+            gen = gsym("_ZN2nn5audio6server17AudioRenderSystem15GenerateCommandEPvm");
+        }
+        mu_off = gen20 ? SYS20_UPDATE_MU : SYS16_UPDATE_MU;
+        LOG("audren：AudioRenderSystem 按 SDK %s 佈局（生成命令時持更新鎖 +%#zx）", gen20 ? "20" : "16", mu_off);
         tmax = gsym("_ZN2nn5audio3dsp20CommandListProcessor17SetProcessTimeMaxEj"); setup = gsym("_ZN2nn5audio3dsp20CommandListProcessor5SetupEPKvm");
         process = gsym("_ZN2nn5audio3dsp20CommandListProcessor7ProcessEv");
     }
-    if (mode(sys) != 1 || device(sys) != 1) return 0x40299;   // 同原函數：非 CPU 手動模式不能手動渲染 | same as the original: manual rendering needs CPU + manual mode
+    int md = gen20 ? *(const int32_t *)(sys + SYS20_MODE) : mode(sys), dv = gen20 ? *(const int32_t *)(sys + SYS20_DEVICE) : device(sys);
+    if (md != 1 || dv != 1) return 0x40299;   // 同原函數：非 CPU 手動模式不能手動渲染 | same as the original: manual rendering needs CPU + manual mode
     pthread_mutex_lock(&g_render_mu);
     uint64_t t0 = now_ns();
-    // 生成命令要與遊戲線程的 RequestUpdate（AudioRenderSystem::Update，持 +0x1f0 的互斥鎖）互斥：原版的系統線程（SendCommandToDsp）也是持同一把鎖生成。處理（CPU 版 DSP）照原版在鎖外。
-    // Command generation must exclude the game thread's RequestUpdate (AudioRenderSystem::Update, which holds the mutex at +0x1f0): the original system thread (SendCommandToDsp) generates under the same lock. Processing (the CPU DSP) stays outside the lock, as in the original.
-    uint8_t *cl = cbuf(sys);
-    lock(sys + 0x1f0); size_t n = gen(sys, cl, cbsz(sys)); unlock(sys + 0x1f0);
+    // 生成命令要與遊戲線程的 RequestUpdate（AudioRenderSystem::Update，持 mu_off 處的互斥鎖）互斥：原版的系統線程（SendCommandToDsp）也是持同一把鎖生成。處理（CPU 版 DSP）照原版在鎖外。
+    // 鎖序固定為 g_render_mu → 更新鎖：追幀在遊戲線程進 Update 之前做，不會持著更新鎖等 g_render_mu
+    // Command generation must exclude the game thread's RequestUpdate (AudioRenderSystem::Update, which holds the mutex at mu_off): the original system thread (SendCommandToDsp) generates under the same lock. Processing (the CPU DSP) stays outside the lock, as in the original.
+    // The lock order is always g_render_mu → update lock: catch-up frames are rendered before the game thread enters Update, so nothing waits for g_render_mu while holding the update lock
+    uint8_t *cl; size_t n;
+    uint64_t tw = now_ns(); lock(sys + mu_off); tw = now_ns() - tw;   // 等更新鎖的時間（遊戲線程正在 Update 時要等） | time spent waiting for the update lock (while the game thread is in Update)
+    if (gen20) { span_t sp = gen20(sys, *(uint8_t *const *)(sys + SYS20_CMDBUF), *(const size_t *)(sys + SYS20_CMDBUF_SIZE)); cl = sp.p; n = sp.n; }
+    else { cl = cbuf(sys); n = gen(sys, cl, cbsz(sys)); }
+    unlock(sys + mu_off);
     atomic_fetch_add(&g_renders, 1);
-    uint64_t proc[16] __attribute__((aligned(16))) = {0};   // CommandListProcessor（0x58 字節）| CommandListProcessor (0x58 bytes)
+    uint64_t proc[16] __attribute__((aligned(16))) = {0};   // CommandListProcessor（SDK 16 0x58 字節；SDK 20 原函數在棧上清 0x60 字節）| CommandListProcessor (0x58 bytes on SDK 16; the SDK 20 original clears 0x60 bytes on its stack)
+    if (ctor) ctor(proc);
     tmax(proc, 0xffffffffu); setup(proc, cl, n); process(proc);
-    if (dst) *nout = capture(cl, dst, 0x13);
+    // DeviceSink 的命令號：SDK 16 是 0x13，SDK 20 往後挪成 0x14；格式對不上時 capture 記紅字並給 0 個採樣，渲染線程放靜音
+    // The DeviceSink command ID: 0x13 on SDK 16, moved to 0x14 on SDK 20; if the format does not match, capture logs a red line and yields 0 samples, and the render thread plays silence
+    if (dst) *nout = cl ? capture(cl, dst, gen20 ? 0x14 : 0x13) : 0;
     // 每幀渲染耗時（5 ms 一幀的預算）：每 2000 幀報均值 / 最大 | render time per frame (budget: 5 ms per frame): mean / max every 2000 frames
-    static uint64_t sum, mx, cnt; uint64_t d = now_ns() - t0; sum += d; if (d > mx) mx = d;
-    if (++cnt == 2000) { LOG("audren：渲染耗時 均 %.2f ms / 最大 %.2f ms（每幀 5 ms 預算，最近 2000 幀）；追幀累計 %llu 次", sum / 2000 / 1e6, mx / 1e6, (unsigned long long)atomic_load(&g_catchups)); sum = mx = cnt = 0; }
+    static uint64_t sum, mx, wmx, cnt; uint64_t d = now_ns() - t0; sum += d; if (d > mx) mx = d; if (tw > wmx) wmx = tw;
+    if (++cnt == 2000) { LOG("audren：渲染耗時 均 %.2f ms / 最大 %.2f ms（其中等更新鎖最長 %.2f ms；每幀 5 ms 預算，最近 2000 幀）；追幀累計 %llu 次", sum / 2000 / 1e6, mx / 1e6, wmx / 1e6, (unsigned long long)atomic_load(&g_catchups)); sum = mx = wmx = cnt = 0; }
     pthread_mutex_unlock(&g_render_mu);
     return RES_OK;
 }
@@ -228,9 +227,9 @@ HLE_FORCE("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29Exe
 // Here, when nothing has been rendered since the last update, one catch-up frame is rendered on the current thread first; its output is queued and played by the render thread in place of its next render.
 // SDK 20：渲染線程經 nn::audio::ExecuteAudioRendererRendering 直達這裡（沒有 AudioRendererImpl 那一層）；計幀、與追幀互斥，從命令表取 DeviceSink 輸出
 // SDK 20: the render thread reaches here straight from nn::audio::ExecuteAudioRendererRendering (there is no AudioRendererImpl layer); count the frame, exclude catch-ups, take the DeviceSink output from the command list
-HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv", "SDK 20 渲染一幀：SDK 自己生成 + CPU 處理，宿主從命令表取 DeviceSink 輸出",
+HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv", "SDK 20 渲染一幀：持更新鎖生成命令 + CPU 處理，宿主從命令表取 DeviceSink 輸出",
           Result, h_ars_Exec, uint8_t *sys) {
-    return sdk20_exec(sys, g_frame, &g_frame_n);
+    return render_once(sys, g_frame, &g_frame_n);
 }
 HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", "渲染器更新：上次更新後沒渲過就先追渲一幀（保證效果初始化），再交 SDK",
           Result, h_ars_Update, uint8_t *sys, void *o, size_t on, void *p, size_t pn, const void *in, size_t inn) {
