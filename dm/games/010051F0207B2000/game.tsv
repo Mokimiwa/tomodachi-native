@@ -54,3 +54,8 @@ shader_note	朋友收集著色器
 # 網絡時鐘按「聯網校過一次」答：朋友收集要它可用，否則先警告時間可能改變，再卡在「到 HOME 設定裡調時間」
 # The network clock is answered as "synced once": Tomodachi Life needs it, otherwise it warns that the time may change and then stays at "fix the time in the HOME settings"
 network_clock	synced
+
+# ---- 輸入 | Input ----
+# Mac 滑鼠左鍵默認點哪觸屏哪：改寫器剪口讓界面每頁都收觸屏指針（dm/tools/patch_nso.py 本作條目），點按鈕就選中，比鎖定滑鼠推小手（像推搖桿）順手。玩家的鍵位表仍可改回 mouse:Left A
+# The Mac left mouse button defaults to touching where clicked: a rewriter cut makes every UI page accept the touch pointer (this title's entry in dm/tools/patch_nso.py), so clicking a button selects it, which handles better than capturing the mouse to push the hand (like a stick). The player's key table can still set mouse:Left A
+mouse_left	Pointer

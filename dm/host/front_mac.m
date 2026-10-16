@@ -4,6 +4,7 @@
 // 鼠標與觸控板（默認）：在畫面上點一下鎖定鼠標（光標藏起、不再移動），之後移動鼠標 = 左搖桿（推遊戲裡的小手 / 指針）、左鍵 A、右鍵 B、中鍵 X；按 ⌘（或沒映射時的 Esc）、
 //   窗口失焦、彈輸入框都會放開。沒鎖定時鼠標只歸系統（標題欄、拖窗口），這樣遊戲裡的小手就是唯一的指針，不會和系統光標錯開。
 //   雙指滾動（或滾輪）= 右搖桿（轉鏡頭）、雙指旋轉 = 右搖桿左右、雙指捏合 = ZL / 張開 = ZR、三指左右滑 = L / R。左鍵改成 Pointer 就是在鼠標處觸屏（拖動跟著走，不鎖定），給吃觸屏的遊戲用。
+//   左鍵的默認由遊戲檔案定（game.tsv mouse_left，缺省 A）：朋友收集默認 Pointer。
 // 改鍵：DM_KEYMAP=<文件>（缺省 $DM_ROOT/keymap.txt），每行「來源 <Switch 控制項>」，逐條覆蓋默認表；來源 key:<鍵名>（見 k_keyname，按美式鍵盤的鍵位，不隨輸入法變）、
 //   mouse:Left / Right / Other / Move、trackpad:Scroll / Rotate、pinch:In / Out、swipe:Left / Right / Up / Down。表文件改過後，窗口回到前台時自動重讀。
 // 窗口與菜單（Mac 原生）：標題欄三個按鈕都能用（關 = 退出前確認、縮到最小 = 掛起、綠鈕 = 全屏）；全屏或窗口比例不是 16:9 時畫面按比例居中、兩邊補黑；
@@ -15,6 +16,7 @@
 // Mouse and trackpad (defaults): a click on the picture captures the mouse (the cursor is hidden and stops moving), after which moving the mouse = left stick (moves the game's hand / pointer), left button A, right button B, middle X; pressing ⌘ (or Esc when it is unmapped),
 //   the window losing focus or a text box appearing releases it. While not captured the mouse belongs to the system only (title bar, dragging the window), so the game's hand is the only pointer and cannot drift away from the system cursor.
 //   Two-finger scroll (or the wheel) = right stick (turns the camera), two-finger rotate = right stick left / right, pinch in = ZL / out = ZR, three-finger swipe left / right = L / R. Mapping the left button to Pointer instead touches the screen where the mouse is (following drags, no capture), for games that take touch.
+//   The left button's default comes from the game profile (game.tsv mouse_left, A by default): Tomodachi Life defaults to Pointer.
 // Remapping: DM_KEYMAP=<file> (default $DM_ROOT/keymap.txt), one line per source "source <Switch control>", overriding the default table entry by entry; sources key:<key name> (see k_keyname, by US keyboard position, independent of the input method),
 //   mouse:Left / Right / Other / Move, trackpad:Scroll / Rotate, pinch:In / Out, swipe:Left / Right / Up / Down. After the file changes it is reread automatically when the window comes back to the front.
 // Window and menus (native Mac): all three title bar buttons work (close = confirm before quitting, minimize = suspend, green = full screen); in full screen or at a non-16:9 window shape the picture is centred at its own aspect with black bars;
@@ -56,7 +58,7 @@ uint64_t front_game_res(int docked) {
 enum { T_ABOUT, T_EDIT_CONTROLS, T_HIDE, T_HIDE_OTHERS, T_SHOW_ALL, T_QUIT, T_EDIT, T_UNDO, T_REDO, T_CUT, T_COPY, T_PASTE, T_SELECT_ALL,
        T_GAME, T_PAUSE, T_RESUME, T_SHOT, T_SAVES, T_VIEW, T_FULL, T_WINDOW, T_MIN, T_ZOOM, T_FRONT, T_HELP, T_CONTROLS, T_LOG,
        T_HINT_CLICK, T_HINT_CMD, T_PAUSED, T_QUIT_Q, T_QUIT_INFO, T_QUIT_OK, T_OK, T_CANCEL, T_INPUT, T_SHOT_SAVED,
-       T_SAVE_FAIL, T_SAVE_SPACE, T_SAVE_OTHER, T_CONTROLS_BODY, T_LANG, T_LANG_SYS, T_LANG_NEXT, T_N };
+       T_SAVE_FAIL, T_SAVE_SPACE, T_SAVE_OTHER, T_CONTROLS_MOUSE, T_CONTROLS_TAP, T_CONTROLS_BODY, T_LANG, T_LANG_SYS, T_LANG_NEXT, T_N };
 static const char *const k_text[T_N][2] = {
     [T_ABOUT] = {"About %@", "關於「%@」"},
     [T_EDIT_CONTROLS] = {"Edit Controls…", "編輯按鍵…"},
@@ -85,11 +87,14 @@ static const char *const k_text[T_N][2] = {
     [T_SAVE_OTHER] = {"The save file couldn't be written (error %d). The game will try again the next time it saves.", "存檔寫不進去（錯誤 %d）。遊戲下次存檔時會再試。"},
     [T_LANG] = {"Game Language", "遊戲語言"}, [T_LANG_SYS] = {"Same as Mac", "跟隨 Mac"},
     [T_LANG_NEXT] = {"The game switches to %@ the next time you open it.", "下次開啟遊戲時會換成%@。"},
-    [T_CONTROLS_BODY] = {"Mouse: click the game, then move the mouse to move the hand. Left button A, right button B. Press ⌘ to release the mouse.\n"
-        "Trackpad: two-finger swipe turns the camera. Pinch in for ZL, out for ZR. Three-finger swipe left or right for L / R.\n"
+    // 操作方式的滑鼠那行按左鍵現在的映射選（Pointer = 點哪觸屏哪，否則鎖定推小手），後面接共用的 T_CONTROLS_BODY
+    // The mouse line of Controls is picked by the left button's current mapping (Pointer = touch where clicked, otherwise capture and push the hand), followed by the shared T_CONTROLS_BODY
+    [T_CONTROLS_MOUSE] = {"Mouse: click the game, then move the mouse to move the hand. Left button A, right button B. Press ⌘ to release the mouse.\n",
+        "滑鼠：先點一下畫面，移動滑鼠就是移動遊戲裡的小手；左鍵 A、右鍵 B。按 ⌘ 鍵放開滑鼠。\n"},
+    [T_CONTROLS_TAP] = {"Mouse: click anywhere to tap the screen there. Right button B.\n", "滑鼠：點畫面上的哪裡，就像用手指點那裡；右鍵 B。\n"},
+    [T_CONTROLS_BODY] = {"Trackpad: two-finger swipe turns the camera. Pinch in for ZL, out for ZR. Three-finger swipe left or right for L / R.\n"
         "Keyboard: W A S D move, P L ; ' turn the camera, J K U I are A B X Y, Q E are L R, Z C are ZL ZR, arrow keys are the D-pad, Return is +, Tab is −.\n"
         "Change any of these with Edit Controls….",
-        "滑鼠：先點一下畫面，移動滑鼠就是移動遊戲裡的小手；左鍵 A、右鍵 B。按 ⌘ 鍵放開滑鼠。\n"
         "觸控板：雙指滑動轉鏡頭，捏合 ZL、張開 ZR，三指左右滑 L / R。\n"
         "鍵盤：W A S D 移動，P L ; ' 轉鏡頭，J K U I 是 A B X Y，Q E 是 L R，Z C 是 ZL ZR，方向鍵是十字鍵，Return 是 +，Tab 是 −。\n"
         "這些都能在「編輯按鍵…」裡改。"},
@@ -124,7 +129,7 @@ static const char k_default_map[] =
     "key:Up Up\nkey:Left Left\nkey:Down Down\nkey:Right Right\n"
     "key:J A\nkey:K B\nkey:U X\nkey:I Y\nkey:Q L\nkey:E R\nkey:Z ZL\nkey:C ZR\n"
     "key:F LS\nkey:G RS\nkey:Return Plus\nkey:Tab Minus\n"
-    "mouse:Left A\nmouse:Right B\nmouse:Other X\nmouse:Move StickL\n"
+    "mouse:Left " DM_GAME_MOUSE_LEFT "\nmouse:Right B\nmouse:Other X\nmouse:Move StickL\n"   // 左鍵默認按遊戲檔案（game.tsv mouse_left：A 或 Pointer） | the left button's default comes from the game profile (game.tsv mouse_left: A or Pointer)
     "trackpad:Scroll StickR\ntrackpad:Rotate StickR\npinch:In ZL\npinch:Out ZR\nswipe:Left L\nswipe:Right R\n";
 static int g_keyrow[128];   // 鍵碼 → 映射表條目號（讀表後查一次） | key code → table entry (looked up once after loading)
 // 鼠標 / 觸控板來源的條目號 | table entries of the mouse / trackpad sources
@@ -284,7 +289,8 @@ static NSString *lang_pref(void) { return [NSUserDefaults.standardUserDefaults s
 - (void)showLog:(id)sender { (void)sender; NSString *p = log_path(); if (p) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:p]]]; }
 - (void)showControls:(id)sender {
     (void)sender; capture_set(0);
-    NSAlert *a = [NSAlert new]; a.messageText = T(T_CONTROLS); a.informativeText = T(T_CONTROLS_BODY); [a addButtonWithTitle:T(T_OK)];
+    NSAlert *a = [NSAlert new]; a.messageText = T(T_CONTROLS); [a addButtonWithTitle:T(T_OK)];
+    a.informativeText = [T(dm_bind_is_pointer(g_mbrow[MB_LEFT]) ? T_CONTROLS_TAP : T_CONTROLS_MOUSE) stringByAppendingString:T(T_CONTROLS_BODY)];
     if (g_win.attachedSheet) [a runModal]; else [a beginSheetModalForWindow:g_win completionHandler:nil];
 }
 - (void)setGameSize:(NSMenuItem *)it {   // tag = 內容寬（點），高按 16:9；放不下就縮到屏幕可用區域 | tag = content width in points, height by 16:9; shrunk to the screen's usable area if it does not fit

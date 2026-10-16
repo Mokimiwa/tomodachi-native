@@ -42,6 +42,7 @@
 # Moving the mouse moves the game's hand. Map it to StickR to turn the camera instead, or - to turn it off.
 # mouse:Move StickL
 # Left button A, right button B, middle button X. Pointer on the left button touches the screen where you click.
+# Tomodachi Life starts with Pointer on the left button; mouse:Left A switches it to capture-and-move.
 # mouse:Left A
 # mouse:Right B
 # mouse:Other X

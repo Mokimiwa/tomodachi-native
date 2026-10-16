@@ -44,7 +44,7 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 ## The Mac app
 
 - **A real Mac app:** the game's icon, full screen and three window sizes, pause, screenshots saved to your screenshot folder, and a question before quitting.
-- **Mouse, trackpad and keyboard:** the mouse moves the game's hand, two-finger gestures turn the camera, pinches and three-finger swipes reach the shoulder buttons. Every binding can be changed in `keymap.txt` (**Edit Controls…**, ⌘,).
+- **Mouse, trackpad and keyboard:** click anywhere to tap the screen there. Two-finger gestures turn the camera; pinches and three-finger swipes reach the shoulder buttons. Every binding can be changed in `keymap.txt` (**Edit Controls…**, ⌘,).
 - **Typing names:** a sheet in the game's own colours, with your input methods and paste.
 - **13 languages:** the game follows your Mac's language; switch it under **Game → Game Language**.
 - **Saves** live in `~/Library/Application Support/nxnative/010051F0207B2000/save`.
@@ -71,7 +71,7 @@ Details per part are in [How it works in detail](#how-it-works-in-detail).
 
 ## Known issues
 
-- The game does not react to touch yet, so the mouse steers the hand the way a stick does.
+- Clicks have only been tried on the opening menus (naming the island and its confirmation). If a click does nothing in a later scene, add `mouse:Left A` to `keymap.txt` to move the hand with the mouse instead.
 
 ## Game profiles
 
@@ -147,7 +147,7 @@ The game language follows the Mac's preferred language (US English when the game
 
 In the app:
 
-- **Mouse:** click the picture to capture the mouse; it then moves the game's hand, with the left button as A and the right as B. Press ⌘ (or an unmapped Esc) to release it. The trackpad turns the camera (two-finger scroll or rotate), pinches for ZL / ZR and swipes with three fingers for L / R.
+- **Mouse:** in Tomodachi Life the mouse works like a finger: a click taps the screen where you click, and the right button is B. Other games capture the mouse when you click the picture; it then moves the game's hand, with the left button as A and the right as B, until you press ⌘ (or an unmapped Esc). Set `mouse:Left` in `keymap.txt` to `Pointer` or `A` to switch between the two. The trackpad turns the camera (two-finger scroll or rotate), pinches for ZL / ZR and swipes with three fingers for L / R.
 - **Menus:** pause (⌘P), screenshot to your screenshot folder (⇧⌘S), window sizes (⌘1–⌘3), full screen (⌃⌘F, or the green button), Edit Controls (⌘,) to open `keymap.txt`, which is reread when you come back to the game. Closing the window asks before quitting.
 - **Text entry:** names and other text are typed in a sheet over the game, with paste and your input methods.
 

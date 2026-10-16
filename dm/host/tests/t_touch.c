@@ -7,6 +7,7 @@
 #include <stdint.h>
 typedef struct { uint32_t id; float x, y; } dm_touch;
 void dm_touch_set(const dm_touch *t, int n);
+void dm_touch_set_range(const dm_touch *t, int n, uint32_t lo, uint32_t hi);
 int touch_fill(void *out, uint64_t now_ns);
 // 被測的 hle_touch.c 每次推送後把手指送去手勢識別（hle_gesture.c，另有單測）：這裡給空實現 | hle_touch.c feeds fingers to gesture recognition after each push (hle_gesture.c, tested separately): stubs here
 void gesture_feed(const int32_t (*pt)[2], int n, uint64_t now) { (void)pt; (void)n; (void)now; }
@@ -32,15 +33,15 @@ int main(void) {
     // 1 按下：id 2 在 (0.5, 0.25) → Start，x = 0.5·1280 = 640，y = 0.25·720 = 180，首讀 delta_time = 0
     // 1 Down: id 2 at (0.5, 0.25) -> Start, x = 0.5*1280 = 640, y = 0.25*720 = 180, delta_time = 0 on the first read
     dm_touch a = {2, 0.5f, 0.25f}; dm_touch_set(&a, 1);
-    expect("按下報 Start（640, 180）", T0, 1, 1, (want_pt[]){{0, 1, 2, 640, 180}});
+    expect("按下報 Start（640, 180），槽 2 是第一根手指：finger_id 0", T0, 1, 1, (want_pt[]){{0, 1, 0, 640, 180}});
     // 2 移動到 (0.75, 0.5) → 屬性 0，x = 960，y = 360，delta_time = 16,666,667 ns
     // 2 Move to (0.75, 0.5) -> attribute 0, x = 960, y = 360, delta_time = 16,666,667 ns
     a.x = 0.75f; a.y = 0.5f; dm_touch_set(&a, 1);
-    expect("移動屬性 0（960, 360），delta_time 為兩次讀的間隔", T0 + 16666667, 2, 1, (want_pt[]){{16666667, 0, 2, 960, 360}});
+    expect("移動屬性 0（960, 360），delta_time 為兩次讀的間隔", T0 + 16666667, 2, 1, (want_pt[]){{16666667, 0, 0, 960, 360}});
     // 3 抬起 → End 報在最後位置，下一次讀 0 個觸點
     // 3 Lifted -> End reported at the last position, and the next read has 0 touch points
     dm_touch_set(NULL, 0);
-    expect("抬起報 End（960, 360）", T0 + 33333334, 3, 1, (want_pt[]){{16666667, 2, 2, 960, 360}});
+    expect("抬起報 End（960, 360）", T0 + 33333334, 3, 1, (want_pt[]){{16666667, 2, 0, 960, 360}});
     expect("End 之後 0 個觸點", T0 + 50000001, 4, 0, NULL);
     // 4 兩次讀之間按下又抬起（id 0 在 (0.1, 0.1)）→ 這次 Start（128, 72），下次 End，再下次空
     // 4 Down and up between two reads (id 0 at (0.1, 0.1)) -> Start (128, 72) this time, End next time, empty the time after
@@ -51,22 +52,33 @@ int main(void) {
     // 5 夾取：(0.9999, 1.5) → x = min(1279, ⌊0.9999·1280⌋ = 1279)，y = min(719, 1080) = 719；(-0.2, -1) → 0, 0
     // 5 Clamping: (0.9999, 1.5) -> x = min(1279, ⌊0.9999*1280⌋ = 1279), y = min(719, 1080) = 719; (-0.2, -1) -> 0, 0
     dm_touch c[2] = {{3, 0.9999f, 1.5f}, {4, -0.2f, -1.0f}}; dm_touch_set(c, 2);
-    expect("坐標夾到 [0,1279]×[0,719]", T0 + 116666669, 8, 2, (want_pt[]){{16666667, 1, 3, 1279, 719}, {16666667, 1, 4, 0, 0}});
+    expect("坐標夾到 [0,1279]×[0,719]", T0 + 116666669, 8, 2, (want_pt[]){{16666667, 1, 0, 1279, 719}, {16666667, 1, 1, 0, 0}});
     dm_touch_set(NULL, 0); touch_fill((uint8_t[0x290]){0}, T0 + 133333336);                  // 採樣 9：兩根 End | sample 9: two End
     expect("兩根 End 之後空", T0 + 150000003, 10, 0, NULL);
-    // 6 兩根手指 id 5、1（推送順序 5 在前）→ 按 id 升序：1 在前
-    // 6 Two fingers id 5 and 1 (pushed with 5 first) -> ascending by id: 1 comes first
+    // 6 兩根手指槽 5、1（推送順序 5 在前）→ 按槽號升序報：槽 1 在前、拿 finger_id 0，槽 5 拿 1
+    // 6 Two fingers in slots 5 and 1 (pushed with 5 first) -> reported in ascending slot order: slot 1 first with finger_id 0, slot 5 gets 1
     dm_touch d[2] = {{5, 0.25f, 0.5f}, {1, 0.5f, 0.75f}}; dm_touch_set(d, 2);
-    expect("多指按 id 升序（1:(640,540) 5:(320,360)）", T0 + 166666670, 11, 2, (want_pt[]){{16666667, 1, 1, 640, 540}, {16666667, 1, 5, 320, 360}});
+    expect("多指按槽號升序報、finger_id 從 0 依次給（槽 1→0 (640,540)、槽 5→1 (320,360)）", T0 + 166666670, 11, 2, (want_pt[]){{16666667, 1, 0, 640, 540}, {16666667, 1, 1, 320, 360}});
     dm_touch_set(NULL, 0); touch_fill((uint8_t[0x290]){0}, T0 + 183333337);                 // 採樣 12：兩根 End | sample 12: two End
     touch_fill((uint8_t[0x290]){0}, T0 + 200000004);                                         // 採樣 13：空 | sample 13: empty
     // 7 同 id 在 End 報出前重按：id 3 按下（Start）→ 抬起 → 立刻又在 (0.5, 0.5) 按下 → 這次報 End（舊位置），下次報新的 Start
     // 7 Same id pressed again before End is reported: id 3 down (Start) -> lifted -> immediately down again at (0.5, 0.5) -> this read reports End (old position), the next reports a new Start
     dm_touch e = {3, 0.25f, 0.25f}; dm_touch_set(&e, 1);
-    expect("重按前：Start（320, 180）", T0 + 216666671, 14, 1, (want_pt[]){{16666667, 1, 3, 320, 180}});
+    expect("重按前：Start（320, 180）", T0 + 216666671, 14, 1, (want_pt[]){{16666667, 1, 0, 320, 180}});
     dm_touch_set(NULL, 0); e.x = 0.5f; e.y = 0.5f; dm_touch_set(&e, 1);
-    expect("重按：先報舊的 End（320, 180）", T0 + 233333338, 15, 1, (want_pt[]){{16666667, 2, 3, 320, 180}});
-    expect("重按：再報新的 Start（640, 360）", T0 + 250000005, 16, 1, (want_pt[]){{16666667, 1, 3, 640, 360}});
+    expect("重按：先報舊的 End（320, 180）", T0 + 233333338, 15, 1, (want_pt[]){{16666667, 2, 0, 320, 180}});
+    expect("重按：再報新的 Start（640, 360）", T0 + 250000005, 16, 1, (want_pt[]){{16666667, 1, 0, 640, 360}});
+    // 8 finger_id 跟真機一樣給最小空閒號：腳本槽 14 單獨按下 = 0；它按著時前端槽 0 再按 = 1；腳本抬起（End 報完）後前端再按一根槽 4 = 0（1 還被佔著）
+    // 8 finger_id gets the lowest free id as on hardware: script slot 14 alone = 0; front slot 0 pressed while it is held = 1; after the script lifts (End reported) another front finger in slot 4 = 0 (1 is still held)
+    dm_touch_set(NULL, 0); touch_fill((uint8_t[0x290]){0}, T0 + 266666672); touch_fill((uint8_t[0x290]){0}, T0 + 283333339);   // 採樣 17 End、18 空 | sample 17 End, 18 empty
+    dm_touch s14 = {14, 0.5f, 0.5f}; dm_touch_set_range(&s14, 1, 14, 16);
+    expect("腳本槽 14 單獨按下：finger_id 0", T0 + 300000006, 19, 1, (want_pt[]){{16666667, 1, 0, 640, 360}});
+    dm_touch f0 = {0, 0.25f, 0.25f}; dm_touch_set(&f0, 1);
+    expect("它按著時前端槽 0 按下：finger_id 1", T0 + 316666673, 20, 2, (want_pt[]){{16666667, 1, 1, 320, 180}, {16666667, 0, 0, 640, 360}});
+    dm_touch_set_range(NULL, 0, 14, 16);
+    expect("腳本抬起：報 End（finger_id 0）", T0 + 333333340, 21, 2, (want_pt[]){{16666667, 0, 1, 320, 180}, {16666667, 2, 0, 640, 360}});
+    dm_touch f04[2] = {{0, 0.25f, 0.25f}, {4, 0.75f, 0.75f}}; dm_touch_set(f04, 2);
+    expect("0 號收回後新手指重用 0", T0 + 350000007, 22, 2, (want_pt[]){{16666667, 0, 1, 320, 180}, {16666667, 1, 0, 960, 540}});
     printf("== %d 項，失敗 %d ==\n", cases, fails);
     return fails != 0;
 }

@@ -196,6 +196,22 @@ CUTS = {
     (0x346430, '08fca752', '087ca052', 'AddressRegionManager 構造：節點區上限 mov w8,#0x3fe00000 → mov w8,#0x3e00000', '僅宿主'),
     (0x3464cc, '09fca752', '097ca052', 'AddressRegionManager 構造：節點區登記為已佔區域的長度 mov w9,#0x3fe00000 → mov w9,#0x3e00000', '僅宿主'),
   ],
+  # 朋友收集 夢想生活 v0 main：點哪選哪（Mac 滑鼠點擊 = 觸屏）。界面的手柄 T（sead::Controller 子類，虛表 main+0x31f9308）每幀在 main+0x3f7600 選指針模式：
+  # 1 自由指針、2 觸屏指針、3 焦點（小手在按鈕間跳）。它讀兩次 T+0x1c0（觸屏允許位，各場景經 main+0x1cfaf50 / 0x1cfaf80 設清）：非 0 時才看觸屏元件的 0 號手指
+  # 有沒有剛按下、按下就切到 2（0x3f774c）；為 0 而當前是 2 就立刻切回 3（0x3f77c0）。在 2 時 main+0x1d32cb0 拿 0 號手指的位置當指針，界面按指針點中按鈕。
+  # 原版只有捏 Mii、工作室等場景設這個位（任天堂 FAQ：觸屏只在部分場景能用），島名頁等選單點了沒反應。兩處剪口讓這兩次讀都當「允許」：手指按下就切觸屏指針、
+  # 不被拉回焦點模式，推搖桿 / 按鍵照原版切回 1 / 3。T+0x1c0 本身不改（它另管指針範圍與鏡頭分支）。只剪第一處不夠：同一幀就被第二處拉回 3（實測點了不選中）。
+  # 實測（掌機）：點島名 → 選中、OK 變亮；點 OK → 進入確認頁。
+  # Tomodachi Life: Living the Dream v0 main: tap to select (a Mac mouse click = touch). The UI controller T (a sead::Controller subclass, vtable main+0x31f9308) picks its pointer mode every frame in main+0x3f7600:
+  # 1 free pointer, 2 touch pointer, 3 focus (the hand hops between buttons). It reads T+0x1c0 (touch-allowed bits, set and cleared per scene through main+0x1cfaf50 / 0x1cfaf80) twice: only when it is non-zero does it look at whether the touch element's finger 0
+  # was just pressed and switch to 2 (0x3f774c); when it is 0 while the mode is 2 it switches straight back to 3 (0x3f77c0). In mode 2, main+0x1d32cb0 takes finger 0's position as the pointer and the UI hits buttons with it.
+  # The original sets those bits only in scenes such as Mii editing and the workshop (Nintendo's FAQ: touch works only in some scenes), so menus such as the island name page ignore taps. The two cuts make both reads "allowed": a finger press switches to the touch pointer
+  # and is not pulled back to focus mode, and the stick / buttons switch back to 1 / 3 as in the original. T+0x1c0 itself is untouched (it also governs the pointer bounds and a camera branch). Cutting only the first is not enough: the second pulls it back to 3 in the same frame (measured: the tap selected nothing).
+  # Measured (handheld): tapping an island name selects it and lights OK; tapping OK moves on to the confirmation page.
+  '56bf85bd535413464cb75bb6c2683b67': [
+    (0x3f774c, '69824379', '29008052', 'UI 手柄選指針模式：觸屏允許位 ldrh w9,[x19,#0x1c0] → mov w9,#1（每頁都看 0 號手指按下，按下就切觸屏指針）', '僅宿主'),
+    (0x3f77c0, '69824379', '29008052', 'UI 手柄選指針模式：觸屏允許位 ldrh w9,[x19,#0x1c0] → mov w9,#1（觸屏指針模式不被拉回焦點模式）', '僅宿主'),
+  ],
 }
 # ---- 已登記觀測門：{NSO 構建號: [(偏移, 編號, 原指令字, 理由)]}。編號與宿主 hle.h 的 OBS_* 一致；
 # 原指令須與位置無關（不得 PC 相對 / 分支 / 涉 x18·tpidr），離線斷言；宿主未掛回調時門塊進出一次即返回 ----

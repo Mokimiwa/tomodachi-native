@@ -17,10 +17,11 @@ uint64_t now_ns(void) { return 0; }
 static uint64_t s_btn; static int32_t s_ax[4];
 static void cap(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { s_btn = b; s_ax[0] = lx; s_ax[1] = ly; s_ax[2] = rx; s_ax[3] = ry; }
 static int ax_is(int32_t lx, int32_t ly, int32_t rx, int32_t ry) { return s_ax[0] == lx && s_ax[1] == ly && s_ax[2] == rx && s_ax[3] == ry; }
-// 讀一次觸屏，找手指 id；返回觸點數，*x / *y 是那根手指的面板坐標（沒有 = -1） | Read the touchscreen once and look for finger id; returns the touch count, *x / *y are that finger's panel coordinates (-1 = absent)
-static int touch_find(uint32_t id, int32_t *x, int32_t *y) {
-    static uint8_t st[0x290]; int k = touch_fill_n(st, 16, 1000); *x = *y = -1;
-    for (int i = 0; i < k; i++) { int32_t v[4]; memcpy(v, st + 0x10 + 0x28 * i + 0x0c, 12); if ((uint32_t)v[0] == id) { *x = v[1]; *y = v[2]; } }
+// 讀一次觸屏，找面板坐標 (x, y) 上的手指；返回觸點數，*fid 是那根手指的 finger_id（沒有 = -1）。finger_id 是宿主按真機規則分配的（hle_touch.c），不等於槽號
+// Read the touchscreen once and look for the finger at panel coordinates (x, y); returns the touch count, *fid is that finger's finger_id (-1 = absent). finger_id is allocated by the host following the hardware rule (hle_touch.c) and is not the slot number
+static int touch_at(int32_t x, int32_t y, int32_t *fid) {
+    static uint8_t st[0x290]; int k = touch_fill_n(st, 16, 1000); *fid = -1;
+    for (int i = 0; i < k; i++) { int32_t v[3]; memcpy(v, st + 0x10 + 0x28 * i + 0x0c, 12); if (v[1] == x && v[2] == y) *fid = v[0]; }
     return k;
 }
 
@@ -64,18 +65,18 @@ int main(void) {
     dm_bind_press(d, 0); dm_bind_analog(ls, 0, 0); dm_bind_publish(cap);
     CHECK(ax_is(0, 0, 0, 0) && s_btn == 0, "全放開：歸零");
 
-    int32_t tx, ty;
+    int32_t fid;
     dm_touch front = {0, 0.75f, 0.5f}; dm_touch_set(&front, 1);
     int t = dm_bind_find("key:T"); dm_bind_press(t, 1); dm_bind_publish(cap);
-    int k = touch_find(DM_TOUCH_BIND, &tx, &ty);
-    CHECK(k == 2 && tx == 320 && ty == 180, "T：映射層的手指（槽 %d）在 (320, 180)，前端手指同在，共 %d 根", DM_TOUCH_BIND, k);
-    dm_bind_press(t, 0); dm_bind_publish(cap); touch_find(DM_TOUCH_BIND, &tx, &ty); touch_find(DM_TOUCH_BIND, &tx, &ty);
-    k = touch_find(0, &tx, &ty);
-    CHECK(k == 1 && tx == 960 && ty == 360, "放開 T：映射層手指報完 End 後消失，前端手指 0 不受影響");
+    int k = touch_at(320, 180, &fid);
+    CHECK(k == 2 && fid == 1, "T：映射層的手指（槽 %d）在 (320, 180)、finger_id 1（前端手指佔 0），共 %d 根", DM_TOUCH_BIND, k);
+    dm_bind_press(t, 0); dm_bind_publish(cap); touch_at(320, 180, &fid); touch_at(320, 180, &fid);
+    k = touch_at(960, 360, &fid);
+    CHECK(k == 1 && fid == 0, "放開 T：映射層手指報完 End 後消失，前端手指（finger_id 0）不受影響");
     dm_touch scr = {DM_TOUCH_SCRIPT, 0.1f, 0.1f}; dm_touch_set_range(&scr, 1, DM_TOUCH_SCRIPT, DM_TOUCH_SCRIPT + DM_TOUCH_SCRIPT_N);
-    dm_touch_set(NULL, 0); touch_find(0, &tx, &ty);
-    k = touch_find(DM_TOUCH_SCRIPT, &tx, &ty);
-    CHECK(k == 1 && tx == 128 && ty == 72, "前端全抬起不會抬起腳本的手指");
+    dm_touch_set(NULL, 0); touch_at(128, 72, &fid);
+    k = touch_at(128, 72, &fid);
+    CHECK(k == 1 && fid == 1, "前端全抬起不會抬起腳本的手指（它按下那次 0 號還在報 End，拿 1）");
     uint8_t small[0x10 + 0x28 * 2]; dm_touch two[3] = {{1, 0.1f, 0.1f}, {2, 0.2f, 0.2f}, {3, 0.3f, 0.3f}}; dm_touch_set(two, 3);
     k = touch_fill_n(small, 2, 2000);
     CHECK(k == 2, "TouchScreenState<2> 只寫 2 根（其餘留到下次）");
@@ -84,8 +85,9 @@ int main(void) {
     dm_bind_load("mouse:Left Pointer\nmouse:Right B\npad:LeftStick StickL\n", NULL);
     int ml = dm_bind_find("mouse:Left"), mr = dm_bind_find("mouse:Right"), ls2 = dm_bind_find("pad:LeftStick");
     CHECK(dm_bind_is_pointer(ml) && !dm_bind_is_pointer(mr) && !dm_bind_is_pointer(-1), "mouse:Left 是 Pointer、mouse:Right 不是");
-    dm_bind_press(ml, 1); dm_bind_publish(cap); k = touch_find(DM_TOUCH_BIND, &tx, &ty);
-    CHECK(s_btn == 0 && tx == -1, "Pointer 不由映射層推觸點（前端按指針位置推），也不按鍵");
+    int k0 = touch_at(-1, -1, &fid);
+    dm_bind_press(ml, 1); dm_bind_publish(cap); k = touch_at(-1, -1, &fid);
+    CHECK(s_btn == 0 && k == k0, "Pointer 不由映射層推觸點（前端按指針位置推），也不按鍵");
     dm_bind_press(mr, 1); dm_bind_analog(ls2, 1, 0); dm_bind_publish(cap);
     CHECK(s_btn == DM_BTN_B && s_ax[0] == M, "放開前：B 按著、左搖桿推滿");
     dm_bind_reset(); dm_bind_publish(cap);
