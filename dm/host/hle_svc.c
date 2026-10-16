@@ -26,6 +26,7 @@ static uint8_t *g_as;              // ASLR 區基址 = 整塊 | ASLR region base
 static uint8_t *g_heap; static size_t g_heap_cur, g_heap_cap;
 // 地址段整個落在客體堆當前已開放（可讀寫）的範圍內：這種讀不用陷內核核對，直接 memcpy（diag.c tk_rd 等每拍讀客體內存的地方用）
 // The address range lies entirely within the currently opened (readable and writable) part of the guest heap: such reads need no kernel trap to check, memcpy directly (used where guest memory is read every tick, such as diag.c tk_rd)
+void dm_guest_as(uint8_t **base, size_t *size) { *base = g_as; *size = g_as ? (size_t)RESERVE : 0; }   // 客體位址空間整塊（診斷用：記憶體快照） | the whole guest address space (diagnostics: memory snapshots)
 int dm_guest_heap_readable(uint64_t a, size_t n) { uint64_t b = (uint64_t)(uintptr_t)g_heap; size_t cur = g_heap_cur; return g_heap && a >= b && n <= cur && a - b <= cur - n; }
 static uint8_t *g_alias; static size_t g_alias_cap;
 static _Atomic uint64_t *g_alias_bits;   // 別名區頁位圖（alias_pages） | alias region page bitmap (alias_pages)

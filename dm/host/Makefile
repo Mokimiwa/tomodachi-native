@@ -15,7 +15,7 @@ CFLAGS=-O1 -g -Wall -Wno-unused-function
 export MACOSX_DEPLOYMENT_TARGET ?= 26.0
 # 服務層接管 hle_*.c 按通配納入：新增文件不改這一行（免合併衝突）
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m dm_bind.c ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m entry.S dm_i18n.c
+SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m dm_bind.c memsnap.c ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m entry.S dm_i18n.c
 # NVN 空設備 + nn::vi（dm/gfx/）
 # 按通配納入 dm/gfx 與 dm/gfx/nvn 下的源（tests/ metal/ 不進宿主）：新增文件不改這一行
 # NVN null device + nn::vi (dm/gfx/)

@@ -194,6 +194,8 @@ static NSRect game_rect(void) {
 }
 static void layer_layout(void) {
     NSRect r = game_rect(); CGFloat s = g_win.backingScaleFactor;
+    static int logs; if (logs++ < 40) LOG("前端：畫面 %.0fx%.0f 點（內容視圖 %.0fx%.0f，倍率 %.0f）%s", r.size.width, r.size.height, g_view.bounds.size.width, g_view.bounds.size.height, s,
+                                        g_win.styleMask & NSWindowStyleMaskFullScreen ? " 全螢幕" : "");
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     g_layer.frame = r; g_layer.contentsScale = s;
     g_layer.drawableSize = CGSizeMake(fmax(1, round(r.size.width * s)), fmax(1, round(r.size.height * s)));
@@ -306,6 +308,8 @@ static NSString *lang_pref(void) { return [NSUserDefaults.standardUserDefaults s
     if (a == @selector(showLog:)) return log_path() != nil;
     return YES;
 }
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)w { (void)w; LOG("【紅】前端：進全螢幕失敗"); }
+- (void)windowDidFailToExitFullScreen:(NSWindow *)w { (void)w; LOG("【紅】前端：退出全螢幕失敗"); }
 - (BOOL)windowShouldClose:(NSWindow *)w { (void)w; [NSApp terminate:self]; return NO; }   // 關窗 = 退出（先問） | closing the window = quitting (asks first)
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
     (void)app; capture_set(0);
@@ -482,11 +486,32 @@ void front_run(void (*guest)(void)) {
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; capture_set(0); if (!g_paused) { dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); } }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!g_paused) { dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); } }];
         [nc addObserverForName:NSApplicationWillTerminateNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; capture_set(0); }];
+        // 全螢幕的尺寸不是 16:9：進全螢幕前先拿掉比例限制（不拿掉 AppKit 會馬上退回視窗），退出後再加回來；黑邊由 layer_layout 補
+        // The full-screen size is not 16:9: drop the aspect constraint before entering (otherwise AppKit drops straight back to the window) and restore it after leaving; layer_layout adds the bars
+        [nc addObserverForName:NSWindowWillEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; win.contentResizeIncrements = NSMakeSize(1, 1); }];
+        [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; win.contentAspectRatio = NSMakeSize(16, 9); }];
+        for (NSNotificationName nm in @[NSWindowWillEnterFullScreenNotification, NSWindowDidEnterFullScreenNotification, NSWindowWillExitFullScreenNotification, NSWindowDidExitFullScreenNotification])
+            [nc addObserverForName:nm object:win queue:nil usingBlock:^(NSNotification *n) { LOG("前端：%s", n.name.UTF8String); }];   // 全螢幕切換的每一步記一行 | one line per full-screen transition step
         // 客體線程：棧 64 MiB（Switch 主線程棧由 npdm 指定，宿主給足）
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
         static guest_arg ga; ga.fn = guest;
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
         pthread_t th; if (pthread_create(&th, &a, guest_tramp, &ga)) die("pthread_create guest");
+        // 診斷 DM_TEST_FULLSCREEN=秒：過這麼多秒進全螢幕，再 3 秒把實際上屏的畫面（drawable 尺寸）存到 DM_TEST_FULLSCREEN_SHOT 後結束
+        // Diagnostic DM_TEST_FULLSCREEN=seconds: enter full screen after that many seconds, 3 seconds later save the presented picture (drawable size) to DM_TEST_FULLSCREEN_SHOT and quit
+        if (getenv("DM_TEST_FULLSCREEN")) {
+            double sec = atof(getenv("DM_TEST_FULLSCREEN")); const char *shotp = getenv("DM_TEST_FULLSCREEN_SHOT");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(sec * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [win toggleFullScreen:nil]; });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((sec + 3) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                LOG("前端：全螢幕測試 視窗 %.0fx%.0f 螢幕 %.0fx%.0f 圖層 %.0fx%.0f drawable %.0fx%.0f", win.frame.size.width, win.frame.size.height, win.screen.frame.size.width, win.screen.frame.size.height,
+                    g_layer.frame.size.width, g_layer.frame.size.height, g_layer.drawableSize.width, g_layer.drawableSize.height);
+                void mtl_grab_next_present(void (^cb)(CGImageRef img));
+                NSString *path = shotp ? @(shotp) : nil;
+                mtl_grab_next_present(^(CGImageRef img) {
+                    if (img && path) { NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img]; [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES]; }
+                    LOG("前端：全螢幕測試 擷取 %zux%zu", img ? CGImageGetWidth(img) : 0, img ? CGImageGetHeight(img) : 0); exit(0); });
+            });
+        }
         [NSApp run];
     }
 }
