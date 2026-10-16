@@ -1,6 +1,6 @@
 # Ryujinx shader translator (vendored subset)
 
-Three projects from Ryujinx 1.3.2, unmodified: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator`.
+Three projects from Ryujinx 1.3.2, with one change: the FMZ multiply mode (`Instructions/InstEmitFloatArithmetic.cs`, where a zero factor makes the product 0 as on Maxwell): `Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator`.
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
 License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.
 

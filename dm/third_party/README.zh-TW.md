@@ -10,7 +10,7 @@ English: [README.md](README.md)
 | `flip/` | NVIDIA FLIP：模擬人眼觀看的圖像差異度量。`FLIP.h` 加命令行工具的源碼 `tool/` | 目錄裡沒有記錄 | 驗證：`dm/verify/gfxq/` 的畫質度量，先 `make -C dm/third_party/flip` 編出 `flip` | `flip/LICENSE`（BSD 3-Clause） |
 | `libdeflate/` | 解壓庫 | 上游提交 `92e6a0d`，未改動 | 宿主：遊戲資源塊的 zlib 解碼（`dm/host/hle_tact.c`）。只編解壓相關的五個源文件，名單在 `dm/host/Makefile` | `libdeflate/COPYING`（MIT） |
 | `libvpx/` | libvpx 的 VP9 解碼器：只編 VP9 解碼器時編到的 71 個源文件、它們的頭文件，以及 `config/` 裡生成的配置 | v1.17.0（上游提交 `6df3ec3`），未改動 | 宿主：解遊戲的 VP9 影片（`dm/host/hle_movie.c`）。`dm/host/Makefile` 把它編成 `gen/vpx/libvpx.a`，iOS 構建編同一批文件 | `libvpx/LICENSE`（BSD 3-Clause），專利授權見 `libvpx/PATENTS` |
-| `ryujinx/` | Ryujinx 的著色器翻譯庫，三個項目：`Ryujinx.Graphics.Shader`、`Ryujinx.Common`、`Spv.Generator` | Ryujinx 1.3.2，未改動 | 著色器翻譯工具 `dm/gfx/tools/dmsh_xlate` 引用它，把 Switch 原版著色器翻譯成 SPIR-V | `ryujinx/LICENSE.txt`（MIT）；`ryujinx/src/Spv.Generator/LICENSE` 是該子項目自帶的許可證文本 |
+| `ryujinx/` | Ryujinx 的著色器翻譯庫，三個項目：`Ryujinx.Graphics.Shader`、`Ryujinx.Common`、`Spv.Generator` | Ryujinx 1.3.2，只改一處：FMZ 乘法模式（`Instructions/InstEmitFloatArithmetic.cs`，乘數有 0 時乘積為 0，同 Maxwell） | 著色器翻譯工具 `dm/gfx/tools/dmsh_xlate` 引用它，把 Switch 原版著色器翻譯成 SPIR-V | `ryujinx/LICENSE.txt`（MIT）；`ryujinx/src/Spv.Generator/LICENSE` 是該子項目自帶的許可證文本 |
 
 幾點補充：
 
