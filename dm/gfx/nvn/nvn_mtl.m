@@ -1230,10 +1230,10 @@ static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image,
     g_up_blits[g_nup_blits++] = (up_blit){src, off, row, image, size, dst, slice, level};
 }
 
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp);
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> into);
 static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    id<MTLTexture> r = pkg_upload_(t, stamp);
+    id<MTLTexture> r = pkg_upload_(t, stamp, nil);
     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
     return r;
@@ -1243,14 +1243,18 @@ uint64_t mtl_upload_gpu_ns_take(void) { return atomic_exchange(&g_upload_gpu_ns,
 void mtl_create_stats(uint64_t *lib, uint64_t *pso) { *lib = g_bp_lib_n; *pso = g_bp_pso_n; }
 void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns) { *lib_ns = g_bp_lib_ns; *pso_ns = g_bp_pso_ns; }   // 同步現建著色器庫 / 管線的累計耗時（長幀日誌按幀取差） | Cumulative time spent synchronously creating shader libraries / pipelines on the spot (the long-frame log takes the per-frame difference)
 uint64_t mtl_upload_bytes(void) { return g_bp_up_bytes; }   // 貼圖上傳累計字節 | Cumulative texture upload bytes
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp) {
+// into 非空：不新建，把池內容解排布上傳進這張已建好的貼圖（tex_seed 用；不設寫保護，之後的 CPU 寫不跟蹤）
+// into non-nil: create nothing and upload the deswizzled pool content into this existing texture (used by tex_seed; no write protection, later CPU writes are not tracked)
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> into) {
     MTLTextureDescriptor *d = tex_desc(t, 1);
     if (!d) return nil;
-    id<MTLTexture> mt = [g_dev newTextureWithDescriptor:d];
+    id<MTLTexture> mt = into ? into : [g_dev newTextureWithDescriptor:d];
     if (!mt) { RED_ONCE(2, "建 MTLTexture 失敗 %ux%u 格式 %#x 目標 %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
-    if (g_allocprof > 0) { static int n; if (n++ < 30 || n % 500 == 0) MLOG("新建貼圖（%s）#%d ser=%llu %ux%ux%u 格式 %#x 目標 %d 級 %u 存儲 %p", __func__, n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, (void *)t->mem); }
-    res_add(mt);   // 首傳與重傳都在這裡登記駐留（Metal 4 不自動駐留；漏登 = GPU 地址頁錯誤） | Both first upload and re-upload register residency here (Metal 4 does not make resources resident automatically; a missed registration = GPU address page fault)
-    nvn_dirty_protect(t->mem, t->L.size);
+    if (!into) {
+        if (g_allocprof > 0) { static int n; if (n++ < 30 || n % 500 == 0) MLOG("新建貼圖（%s）#%d ser=%llu %ux%ux%u 格式 %#x 目標 %d 級 %u 存儲 %p", __func__, n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, (void *)t->mem); }
+        res_add(mt);   // 首傳與重傳都在這裡登記駐留（Metal 4 不自動駐留；漏登 = GPU 地址頁錯誤） | Both first upload and re-upload register residency here (Metal 4 does not make resources resident automatically; a missed registration = GPU address page fault)
+        nvn_dirty_protect(t->mem, t->L.size);
+    }
     *stamp = nvn_dirty_now();
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;
@@ -1384,6 +1388,24 @@ static void tex_zero_fill(id<MTLTexture> mt) {
     if (!g_tex_zeroed++) MLOG("新建貼圖清零：開（Metal 新貼圖內容未定義，Switch 新內存讀 0）");
 }
 
+// 新建的非預排布貼圖若在 CPU 可見池裡、池內存已有資料：照池內容當初值，不清零。Switch 的 GPU 直接讀池內存，遊戲可以不經 WriteTexels、自己用 CPU 按塊線性排好寫進去。
+// 朋友收集的大氣散射表就是這樣（256×32×16 RGBA16F 3D，池 CPU_CACHED|GPU_CACHED，貼圖標誌 0）：原先建成全 0 的純 GPU 貼圖，天空散射算出 0，
+// 中午天空與環境光全黑（地面黑、海發白），傍晚只剩別的光源，整體偏綠、海不藍。GPU 從不把結果寫回客體內存，所以池裡的非零資料只會是 CPU 寫的
+// When a newly created non-packaged texture sits in a CPU-visible pool whose memory already holds data, that data becomes the initial content instead of zeros. The Switch GPU reads pool memory directly, so a game can write block-linear data with the CPU itself, without WriteTexels.
+// Tomodachi Life's atmospheric scattering table does this (256x32x16 RGBA16F 3D, pool CPU_CACHED|GPU_CACHED, texture flags 0): it used to become an all-zero GPU-only texture, the sky scattering came out 0,
+// and at noon the sky and ambient light were black (black ground, washed-out sea) while in the evening only other lights remained (a green cast, a sea that is not blue). The GPU never writes results back to guest memory, so non-zero data in the pool can only come from the CPU
+static int tex_seed(const tex_t *t, id<MTLTexture> mt) {
+    if (!t->mem || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) || t->L.size < 8) return 0;
+    if (!atomic_load(&g_sub_thread_set) || !on_sub_thread()) return 0;   // 上傳批只屬於提交線程 | the upload batch belongs to the submit thread only
+    if (mt.sampleCount > 1 || (mt.pixelFormat >= MTLPixelFormatDepth16Unorm && mt.pixelFormat <= MTLPixelFormatX24_Stencil8)) return 0;   // 多重採樣、深度 / 模板拷不進去 | multisample and depth / stencil cannot be copied into
+    const uint64_t *w = (const uint64_t *)t->mem; size_t n = t->L.size / 8, i = 0;
+    while (i < n && !w[i]) i++;
+    if (i == n) return 0;
+    uint64_t st; if (!pkg_upload_(t, &st, mt)) return 0;
+    static int nl; if (nl++ < 8) MLOG("新建貼圖照池內容填初值 ser=%llu %ux%ux%u 格式 %#x 目標 %d（CPU 直接寫進池內存的資料）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target);
+    return 1;
+}
+
 static int clear_rect_zero(int i);
 // 線性貼圖（LINEAR）放在 CPU 可見池裡：遊戲用 CPU 直接往池內存寫（SMBW 的字形緩存：2048×8192 R8，IMAGE|LINEAR，池 CPU_UNCACHED|GPU_CACHED，
 // 字體引擎在 CPU 上把字形畫進去）。GPU 私有貼圖看不到這些寫入 → 菜單 / 對話框文字全空。統一內存下直接在池緩衝上建線性貼圖（零拷貝），GPU 執行時讀到當前內容，同 NVN 語義。
@@ -1498,7 +1520,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (!d) return nil;
         mt = [g_dev newTextureWithDescriptor:d];
         if (!mt) { RED_ONCE(2, "建 MTLTexture 失敗 %ux%u 格式 %#x 目標 %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
-        res_add(mt); tex_zero_fill(mt);   // 先登記駐留再清零（拷貝目標也要駐留） | register residency before zeroing (the copy destination must be resident too)
+        res_add(mt); if (!tex_seed(t, mt)) tex_zero_fill(mt);   // 先登記駐留再填初值（拷貝目標也要駐留） | register residency before filling the initial content (the copy destination must be resident too)
     }
     if (g_allocprof > 0) { static int n; if (n++ < 30 || n % 500 == 0) MLOG("新建貼圖（%s）#%d ser=%llu %ux%ux%u 格式 %#x 目標 %d 級 %u 存儲 %p", __func__, n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, (void *)t->mem); }
     if (getenv("DM_NVN_TEXCPU") && t->pool && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) MLOG("CPU 可見池上的非預排布貼圖 ser=%llu %ux%ux%u 格式 %#x 目標 %d 級 %u 貼圖標誌 %#x 池標誌 %#x 存儲 %p", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels, t->d.flags, t->pool->flags, (void *)t->mem);
@@ -2039,10 +2061,19 @@ static void bv_flush(void) {
 // Attachment feedback (sampling one's own colour attachment in the same pass): on the Switch a texture barrier makes it legal for each pixel to read its own spot; in Metal reading and writing the same texture in one render pass is undefined,
 // and a tiled GPU reads data other tiles are still storing (Tomodachi Life's full-screen post-process reads the HDR picture and writes it back: NaN appears on 128-row boundaries, the confirmation box after typing a name blurs the picture and blends it back, and the NaN spreads into green blocks that stay on the canvas).
 // Fix: before the pass, copy the sampled attachment into a reused copy (fbx_prepare); bindings in this pass that sample that attachment read the copy instead (fbx_bind); it lapses when the pass ends
-enum { FBX_MAX = 4 };
-static __strong id<MTLTexture> g_fbx_pool[FBX_MAX]; static uint64_t g_fbx_use[FBX_MAX], g_fbx_tick;
+// 副本池按（格式, 尺寸, 級數）重用：一幀裡會拷十幾種尺寸（Mii 臉部貼圖、泛光鏈、彈窗模糊），池太小就每幀輪流新建、丟棄
+// 通道結束時建給綁定的視圖不能馬上放掉：Metal 4 的命令緩衝不持有資源，GPU 還沒跑到這個通道，視圖就沒了，讀到的是空的或別張貼圖（彈窗背景全黑、Mii 畫面發白帶殘影）。交給 defer_obj_unref 等提交完成
+// The copy pool is reused by (format, size, levels): a frame copies a dozen or more sizes (Mii face textures, the bloom chain, the popup blur), and a pool that is too small creates and drops copies every frame
+// The views built for the bindings cannot be dropped as soon as the pass ends: Metal 4 command buffers do not retain resources, so the view would be gone before the GPU reaches the pass and the read returns nothing or another texture (a black popup background, a washed-out Mii screen with ghosts). defer_obj_unref holds them until the submission completes
+enum { FBX_MAX = 4, FBX_POOL = 32 };
+static __strong id<MTLTexture> g_fbx_pool[FBX_POOL]; static uint64_t g_fbx_use[FBX_POOL], g_fbx_tick;
 static __strong id<MTLTexture> g_fbx_copy[FBX_MAX]; static uint64_t g_fbx_ser[FBX_MAX]; static int g_fbx_n;
 static NSMutableDictionary<NSNumber *, id<MTLTexture>> *g_fbx_views; static uint64_t g_fbx_count;   // g_fbx_count：累計拷了幾次 | g_fbx_count: copies made so far
+// 副本只代表拷的那一刻：之後本通道再畫一次，附件就變了。遊戲在同一通道裡一層層疊（每畫一層讀前一層的結果，Switch 靠兩次繪製之間的紋理屏障；Mii 臉部貼圖、彈窗模糊鏈都這樣），
+// 再讀附件的繪製得結束通道、重拷一份。g_fbx_drawn：拷完之後本通道畫過了
+// A copy only holds the moment it was made: once this pass draws again, the attachment has changed. Games stack layers in one pass (each layer reads the previous layer's result, legal on the Switch through a texture barrier between the draws; the Mii face textures and the popup blur chain do this),
+// so a later draw that reads the attachment must end the pass and copy again. g_fbx_drawn: this pass has drawn since the copy
+static int g_fbx_drawn;
 static void rp_end(void) { if (g_enc) { AP_B;
     ghost_flush();
     if (enc_label_on()) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // 幀內序號：同一趟每幀同名，表裡才能按名歸並 | Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
@@ -2050,7 +2081,7 @@ static void rp_end(void) { if (g_enc) { AP_B;
 #ifdef NVN_RT_RANGE_TEST
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
-    sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; if (g_fbx_n) { g_fbx_n = 0; [g_fbx_views removeAllObjects]; } g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); if (g_lp.count) lp_finish(); fz_end();
+    sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; if (g_fbx_n) { g_fbx_n = 0; for (id v in g_fbx_views.allValues) defer_obj_unref(v); [g_fbx_views removeAllObjects]; } g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); if (g_lp.count) lp_finish(); fz_end();
 #ifdef NVN_RT_RANGE_TEST
     rr_finish(ranged);
 #endif
@@ -4905,6 +4936,7 @@ static unsigned fbx_hazard(NvProg *pr) {
 }
 static int fbx_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_FBX"); on = !(e && !strcmp(e, "0")); if (!on) MLOG("DM_NVN_FBX=0：附件回授不拷副本（對照用）"); } return on; }   // DM_NVN_FBX=0 關（A/B 對照） | DM_NVN_FBX=0 turns it off (A/B comparison)
 static void fbx_prepare(NvProg *pr) {
+    g_fbx_drawn = 0;
     if (!fbx_on()) return;
     unsigned mask = fbx_hazard(pr);
     for (int k = 0; mask && k < R.rt.n && k < 8 && g_fbx_n < FBX_MAX; k++) {
@@ -4912,7 +4944,7 @@ static void fbx_prepare(NvProg *pr) {
         id<MTLTexture> a = tex_mtl(R.rt.color[k]);
         if (!a || a.textureType != MTLTextureType2D || a.sampleCount != 1 || bc_block_bytes(a.pixelFormat)) continue;
         int hit = -1, lru = 0;
-        for (int i = 0; i < FBX_MAX; i++) {
+        for (int i = 0; i < FBX_POOL; i++) {
             int busy = 0; for (int j = 0; j < g_fbx_n; j++) busy |= g_fbx_copy[j] == g_fbx_pool[i];
             id<MTLTexture> c = g_fbx_pool[i];
             if (c && !busy && c.pixelFormat == a.pixelFormat && c.width == a.width && c.height == a.height && c.mipmapLevelCount == a.mipmapLevelCount) { hit = i; break; }
@@ -5043,11 +5075,14 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
 frz_plain:;
     int need = g_enc || !tbdr_on() ? 3 : pass_ds_need(), mode = defer_q_draw ? 0 : need == 0 ? 2 : need == 2 ? 3 : need == 1 ? 4 : 0;   // 2 都不掛 3 只掛模板 4 只掛深度 | 2 attach neither, 3 attach stencil only, 4 attach depth only
     int skip_d = mode != 0;
-    if (g_enc && !g_fbx_n && fbx_on() && fbx_hazard(pr)) rp_end();   // 通道中途要讀自己的附件：先結束通道，下面重開時拷副本 | a draw mid-pass reads its own attachment: end the pass first, the copy is made when it reopens below
+    // 通道中途要讀自己的附件（還沒拷過，或拷完之後又畫過）：先結束通道，下面重開時重拷
+    // A draw mid-pass reads its own attachment (not copied yet, or drawn to since the copy): end the pass first, the copy is made again when it reopens below
+    if (g_enc && (!g_fbx_n || g_fbx_drawn) && fbx_on() && fbx_hazard(pr)) rp_end();
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; fbx_prepare(pr); }
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) return;
+    if (g_fbx_n) g_fbx_drawn = 1;   // 這次繪製之後副本就舊了 | the copy is stale after this draw
     if (defer_q_draw) defer_replay();
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
     // 管線只依賴（程序, 通道目標, 混合 / 顏色 / 寫掩碼 / 多重採樣狀態, 頂點佈局）：這些沒變就沿用上次的
@@ -5457,6 +5492,73 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
 }
 // GPU：貼圖 → 貼圖（原先誤列為空操作，選角頁每幀 3 次）。等尺寸、不鏡像、同格式 → 逐層 blit；其餘語義（縮放帶過濾、鏡像、換格式）blit 表達不了，報紅待實現
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
+// 縮放的貼圖→貼圖拷貝（2D 引擎：來源與目標矩形大小不同）。朋友收集用它一級級生成 Mii 臉部貼圖的 mipmap（128×256→64×128→…）；原先報紅跳過，
+// 縮小的那幾級一直是 0，斜看的下顎兩側取到小級就成了純黑。做法：開一個小渲染通道，把來源那一級的矩形畫進目標那一級的矩形，按標誌線性 / 最近點濾波。
+// 只做 2D、非整數、非深度的顏色格式（目標要能當渲染目標）；鏡像標誌不做。做不了回 0，照舊報紅
+// Scaled texture-to-texture copy (2D engine: source and destination rectangles of different sizes). Tomodachi Life generates the mipmaps of the Mii face textures level by level with it (128x256 -> 64x128 -> ...); it used to be reported and skipped,
+// so the smaller levels stayed 0 and the jaw seen at a grazing angle, which samples those levels, turned pure black. Fix: a small render pass draws the source level's rectangle into the destination level's rectangle, filtered linearly or by nearest point per the flags.
+// Only 2D, non-integer, non-depth color formats (the destination must be usable as a render target); mirror flags are not handled. Returns 0 when it cannot, and the caller reports as before
+static id<MTL4ArgumentTable> g_t2ts_args; static id<MTLBuffer> g_t2ts_const; static unsigned g_t2ts_i;
+static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *g_t2ts_pso; static id<MTLSamplerState> g_t2ts_samp[2];
+enum { T2TS_SLOTS = 1024 };   // 常量環：每次拷貝 32 字節，一輪 1024 次（遠多於在途幀裡的拷貝數） | constant ring: 32 bytes per copy, 1024 copies per lap (far more than the copies of the frames in flight)
+static int pf_is_int(MTLPixelFormat f) {
+    switch ((int)f) { case 13: case 14: case 23: case 24: case 33: case 34: case 53: case 54: case 63: case 64: case 73: case 74: case 91: case 103: case 104: case 113: case 114: case 123: case 124: return 1; }
+    return 0;
+}
+static int copy_t2t_scaled(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear) {
+    if (!(d.usage & MTLTextureUsageRenderTarget) || s.sampleCount > 1 || d.sampleCount > 1) return 0;
+    if (!mtl_pf_bytes(s.pixelFormat) || !mtl_pf_bytes(d.pixelFormat) || pf_is_int(s.pixelFormat) || pf_is_int(d.pixelFormat)) return 0;
+    if (sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0) return 0;
+    NSUInteger sn = s.arrayLength * (s.textureType == MTLTextureTypeCube || s.textureType == MTLTextureTypeCubeArray ? 6 : 1), dn = d.arrayLength * (d.textureType == MTLTextureTypeCube || d.textureType == MTLTextureTypeCubeArray ? 6 : 1);
+    if (sl >= s.mipmapLevelCount || dl >= d.mipmapLevelCount || ss >= sn || ds >= dn) return 0;   // 遊戲聲明的級數可能多於貼圖能有的（128×256 聲明 15 級，實建 9 級）：超出的級不存在 | the game may declare more levels than the texture can have (15 declared for 128x256, 9 created): levels beyond do not exist
+    NSUInteger sw = MAX(s.width >> sl, 1u), sh = MAX(s.height >> sl, 1u), dw = MAX(d.width >> dl, 1u), dh = MAX(d.height >> dl, 1u);
+    if ((NSUInteger)(dr->xoffset + dr->width) > dw || (NSUInteger)(dr->yoffset + dr->height) > dh) return 0;
+    if (!g_t2ts_args) {
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1;
+        NSError *e = nil; g_t2ts_args = [g_dev newArgumentTableWithDescriptor:ad error:&e];
+        g_t2ts_const = [g_dev newBufferWithLength:32 * T2TS_SLOTS options:MTLResourceStorageModeShared];
+        if (!g_t2ts_args || !g_t2ts_const) { MLOG("【紅】縮放拷貝初始化失敗：%s", e.localizedDescription.UTF8String); return 0; }
+        res_add(g_t2ts_const);
+        for (int i = 0; i < 2; i++) { MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = i ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+            sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES; g_t2ts_samp[i] = [g_dev newSamplerStateWithDescriptor:sd]; }
+        g_t2ts_pso = [NSMutableDictionary dictionary];
+    }
+    id<MTLRenderPipelineState> ps = g_t2ts_pso[@(d.pixelFormat)];
+    if (!ps) {
+        static id<MTLLibrary> lib;
+        if (!lib) { static const char *src =
+            "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; float2 uv; };\n"
+            "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
+            "struct R { float4 rect; };\n"   // 來源矩形（歸一化）：xy 起點、zw 寬高 | source rectangle (normalized): xy origin, zw size
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant R& r [[buffer(0)]]) { return t.sample(s, r.rect.xy + in.uv * r.rect.zw, level(0)); }\n";
+            NSError *e = nil; lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+            if (!lib) { MLOG("【紅】縮放拷貝著色器編譯失敗：%s", e.localizedDescription.UTF8String); return 0; } }
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"]; pd.colorAttachments[0].pixelFormat = d.pixelFormat;
+        NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!ps) { MLOG("【紅】縮放拷貝管線失敗（格式 %lu）：%s", (unsigned long)d.pixelFormat, e.localizedDescription.UTF8String); return 0; }
+        g_t2ts_pso[@(d.pixelFormat)] = ps;
+    }
+    MTLTextureType tt = s.textureType == MTLTextureType2DArray || s.textureType == MTLTextureTypeCube || s.textureType == MTLTextureTypeCubeArray ? MTLTextureType2D : s.textureType;
+    if (tt != MTLTextureType2D || (d.textureType != MTLTextureType2D && d.textureType != MTLTextureType2DArray && d.textureType != MTLTextureTypeCube && d.textureType != MTLTextureTypeCubeArray)) return 0;
+    id<MTLTexture> sv = [s newTextureViewWithPixelFormat:s.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss, 1)];
+    id<MTLTexture> dv = [d newTextureViewWithPixelFormat:d.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(dl, 1) slices:NSMakeRange(ds, 1)];
+    if (!sv || !dv) return 0;
+    rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = dv; rp.colorAttachments[0].loadAction = MTLLoadActionLoad; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    ser_gate();
+    id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; if (!en) return 0;
+    [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [en setArgumentTable:g_t2ts_args atStages:MTLRenderStageFragment];
+    unsigned slot = g_t2ts_i++ % T2TS_SLOTS; float *r = (float *)((uint8_t *)g_t2ts_const.contents + 32 * slot);
+    r[0] = (float)sr->xoffset / sw; r[1] = (float)sr->yoffset / sh; r[2] = (float)sr->width / sw; r[3] = (float)sr->height / sh;
+    [g_t2ts_args setTexture:sv.gpuResourceID atIndex:0]; [g_t2ts_args setSamplerState:g_t2ts_samp[linear ? 1 : 0].gpuResourceID atIndex:0]; [g_t2ts_args setAddress:g_t2ts_const.gpuAddress + 32 * slot atIndex:0];
+    [en setViewport:(MTLViewport){dr->xoffset, dr->yoffset, dr->width, dr->height, 0, 1}]; [en setScissorRect:(MTLScissorRect){(NSUInteger)dr->xoffset, (NSUInteger)dr->yoffset, (NSUInteger)dr->width, (NSUInteger)dr->height}];
+    [en setRenderPipelineState:ps]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
+    defer_obj_unref(sv); defer_obj_unref(dv);   // 視圖等這次提交跑完再放（Metal 4 命令緩衝不持有資源） | views are released after this submission finishes (Metal 4 command buffers do not retain resources)
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    static int n; if (!n++) MLOG("縮放的貼圖→貼圖拷貝：首例 %lux%lu 級 %u → %lux%lu 級 %u 格式 %lu（%s）", (unsigned long)sw, (unsigned long)sh, sl, (unsigned long)dw, (unsigned long)dh, dl, (unsigned long)d.pixelFormat, linear ? "線性" : "最近點");
+    return 1;
+}
 static void copy_t2t(const p_copy_t2t *c) {
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "貼圖拷貝源");
     rp_flush();   // 掛起的純清除通道先落地（零源候選在通道結束時才進集合）；下面 blit() 本來也會結束通道 | Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
@@ -5502,6 +5604,9 @@ static void copy_t2t(const p_copy_t2t *c) {
         for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
         if (ok) return;
     }
+    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height) && !s3 && !d3 && (c->sr.depth ? c->sr.depth : 1) == 1 && (c->dr.depth ? c->dr.depth : 1) == 1
+        && !(c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
+        && copy_t2t_scaled(s, d, sl, sz0 + c->sr.zoffset, dl, dz0 + c->dr.zoffset, &c->sr, &c->dr, c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT)) return;   // 縮放拷貝（見 copy_t2t_scaled） | scaled copy (see copy_t2t_scaled)
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
         RED_ONCE(33, "貼圖→貼圖拷貝未實現的形態：%dx%dx%d→%dx%dx%d 標誌 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
