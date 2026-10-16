@@ -14,5 +14,12 @@ void dm_uiscreen_set_ingame(int on);          // 只許界面每幀那一處（d
 void dm_uiscreen_set_panel(int on);           // 局內開著大面板（功能頁 / 箱子 / 商人 / 魔盒…，= 觸摸前端的面板模式）：界面矩形移到正中；關掉回落前端選的擺法。觸摸前端在界面消息回調裡調 | A large panel open in a run (function pages / stash / vendor / cube..., = the touch front end's panel mode): the UI rectangle moves to the center; when closed it drops back to the placement the front end chose. Called by the touch front end in the UI message callback
 int dm_uiscreen_panel(void);                 // 上面那個狀態：局內開著大面板 = 1 | The state above: a large panel open in a run = 1
 #include <stdint.h>
+#include <string.h>
 uint64_t dm_game_res(int docked);            // 遊戲出圖分辨率參數位此刻該給的值（{u32 寬, u32 高} 打包）：前端的原生值，真全屏打開且不在局裡時改成屏寬的 16:9 | The value the game's render resolution parameter slot should give right now (packed {u32 width, u32 height}): the front end's native value, changed to 16:9 of the screen width when true fullscreen is on and not in a run
+// KRESF 參數位此刻該給的值：主機模式輸出寬高（dm_game_res(1)）的 float 位模式，低 32 位寬、高 32 位高（改寫器的跳板直接當浮點用，見 dm_aspect.h）
+// The value the KRESF parameter slot should give right now: the docked output width and height (dm_game_res(1)) as float bit patterns, width in the low 32 bits and height in the high 32 bits (the rewriter's trampolines use them directly as floats, see dm_aspect.h)
+static inline uint64_t dm_game_resf(void) {
+    uint64_t r = dm_game_res(1); float w = (float)(uint32_t)r, h = (float)(uint32_t)(r >> 32); uint32_t a, b;
+    memcpy(&a, &w, 4); memcpy(&b, &h, 4); return (uint64_t)b << 32 | a;
+}
 void dm_uiscreen_res_reread(void);            // 只許 hle_oe.c 在遊戲取走「性能模式變化」通知時調 | May only be called by hle_oe.c when the game takes the "performance mode changed" notification

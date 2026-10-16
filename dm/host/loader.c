@@ -16,7 +16,8 @@ module_t g_mod[MAX_MOD];
 int g_nmod;
 pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui;   // g_keyaspect：寬高比上限參數位（KASPECT）          // 分辨率參數位（改寫器 PARAMS，KRES0 掌機 / KRES1 主機）；產物沒有即 0、不佔 | g_keyaspect: aspect ratio upper-limit parameter slot (KASPECT)          // resolution parameter slots (rewriter PARAMS, KRES0 handheld / KRES1 docked); 0 and not allocated if the build output lacks them
-enum { KEY_K18, KEY_KTLS, KEY_KTLR, KEY_KGATE, KEY_KRES0, KEY_KRES1, KEY_KASPECT, KEY_KASPECTUI, KEY_N };
+pthread_key_t g_keyresf;   // 主機模式輸出寬高的浮點參數位（KRESF：{f32 寬, f32 高}，dm_aspect.h） | parameter slot with the docked output width and height as floats (KRESF: {f32 width, f32 height}, dm_aspect.h)
+enum { KEY_K18, KEY_KTLS, KEY_KTLR, KEY_KGATE, KEY_KRES0, KEY_KRES1, KEY_KASPECT, KEY_KASPECTUI, KEY_KRESF, KEY_N };
 
 uint64_t resolve_import(module_t *m, const char *name);
 void gate_register(uint64_t ret_addr, const char *kind, int arg, uint64_t orig);
@@ -25,7 +26,7 @@ static pthread_key_t key_value(unsigned i) {
     switch (i) {
     case KEY_K18: return g_key18; case KEY_KTLS: return g_keytls; case KEY_KTLR: return g_keytlr;
     case KEY_KGATE: return g_keygate; case KEY_KRES0: return g_keyres[0]; case KEY_KRES1: return g_keyres[1];
-    case KEY_KASPECT: return g_keyaspect; default: return g_keyaspectui;
+    case KEY_KASPECT: return g_keyaspect; case KEY_KRESF: return g_keyresf; default: return g_keyaspectui;
     }
 }
 static void create_keys(void) {
@@ -34,9 +35,9 @@ static void create_keys(void) {
     // 參數位鍵一律建（不按產物有沒有用到判斷：iOS 包裡沒有 params.tsv，按文件判斷會漏建、鍵頁寫成 0 → 遊戲讀到 TSD 0 號槽）
     // Parameter slot keys are always created (not decided by whether the build output uses them: an iOS app has no params.tsv, so deciding by file would miss creating them and the key page would be written as 0 → the game reads TSD slot 0)
     if (pthread_key_create(&g_keyres[0], NULL) || pthread_key_create(&g_keyres[1], NULL) ||
-        pthread_key_create(&g_keyaspect, NULL) || pthread_key_create(&g_keyaspectui, NULL)) die("創建參數位鍵失敗");
-    LOG("鍵號 K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu KRES0=%lu KRES1=%lu KASPECT=%lu KASPECTUI=%lu",
-        g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[0], g_keyres[1], g_keyaspect, g_keyaspectui);
+        pthread_key_create(&g_keyaspect, NULL) || pthread_key_create(&g_keyaspectui, NULL) || pthread_key_create(&g_keyresf, NULL)) die("創建參數位鍵失敗");
+    LOG("鍵號 K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu KRES0=%lu KRES1=%lu KASPECT=%lu KASPECTUI=%lu KRESF=%lu",
+        g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[0], g_keyres[1], g_keyaspect, g_keyaspectui, g_keyresf);
 }
 
 // K 槽校驗：pthread TSD 佈局固定，槽 = tpidrro_el0 + 8*key
@@ -155,7 +156,7 @@ static void read_layout(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
     FILE *f = fopen(path, "r");
     if (!f) die("open %s", path);
-    static const char *kn[8] = {"K18", "KTLS", "KTLR", "KGATE", "KRES0", "KRES1", "KASPECT", "KASPECTUI"};
+    static const char *kn[KEY_N] = {"K18", "KTLS", "KTLR", "KGATE", "KRES0", "KRES1", "KASPECT", "KASPECTUI", "KRESF"};
     char line[256], key[32]; unsigned long v; unsigned seen = 0;
     while (fgets(line, sizeof line, f)) {
         if (sscanf(line, "# %31s %lx", key, &v) != 2) die("%s: 產物是舊改寫器出的，換成當前代號（dm/PRODUCT）的產物", path);
@@ -166,7 +167,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
         else if (!strcmp(key, "BUILD_ID")) sscanf(line, "# %*s %32s", m->build_id);
-        else for (int k = 0; k < 8; k++) {
+        else for (int k = 0; k < KEY_N; k++) {
             size_t n = strlen(kn[k]);
             if (!strncmp(key, "KEY_", 4) && !strncmp(key + 4, kn[k], n) && !strcmp(key + 4 + n, "_IDX")) {
                 m->key_idx[k] = (unsigned)strtoul(strrchr(line, '\t') + 1, 0, 10); seen |= 1u << k;
@@ -174,7 +175,10 @@ static void read_layout(module_t *m, const char *dir) {
         }
     }
     fclose(f);
-    if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != 0xff)
+    // KRESF 是後加的：之前出的產物沒有它（也就沒有讀它的代碼），照常裝；其餘八個缺一即舊產物
+    // KRESF was added later: build outputs made before it lack it (and so have no code reading it) and load as usual; missing any of the other eight means an old build output
+    m->has_resf = seen >> KEY_KRESF & 1;
+    if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || (seen & 0xff) != 0xff)
         die("%s: 產物是舊改寫器出的，換成當前代號（dm/PRODUCT）的產物", path);
 }
 
@@ -185,7 +189,8 @@ static void install_key_page(module_t *m) {
     for (unsigned i = 0; i < 4; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
     page[m->key_idx[KEY_KRES0]] = (uint64_t)g_keyres[0] * 8; page[m->key_idx[KEY_KRES1]] = (uint64_t)g_keyres[1] * 8;
     page[m->key_idx[KEY_KASPECT]] = (uint64_t)g_keyaspect * 8; page[m->key_idx[KEY_KASPECTUI]] = (uint64_t)g_keyaspectui * 8;
-    for (int k = 0; k < 8; k++) if (!page[m->key_idx[k]]) die("%s: 鍵頁第 %d 項為 0（宿主鍵沒建）——遊戲會讀到 TSD 0 號槽", m->name, k);
+    if (m->has_resf) page[m->key_idx[KEY_KRESF]] = (uint64_t)g_keyresf * 8;
+    for (int k = 0; k < KEY_KRESF + m->has_resf; k++) if (!page[m->key_idx[k]]) die("%s: 鍵頁第 %d 項為 0（宿主鍵沒建）——遊戲會讀到 TSD 0 號槽", m->name, k);
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s 鍵頁 mprotect", m->name);
 }
 

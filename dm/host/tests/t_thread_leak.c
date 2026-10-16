@@ -23,7 +23,7 @@ static void t_free(void *p) { if (!p) return; atomic_fetch_sub(&g_live_blocks, 1
 #undef calloc
 #undef free
 
-pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[2], g_keyaspect, g_keyaspectui;
+pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[2], g_keyaspect, g_keyaspectui, g_keyresf;
 void dm_gate(void) {}
 uint64_t dm_game_res(int i) { (void)i; return 0; }
 uint64_t front_game_res(int i) { (void)i; return 0; }

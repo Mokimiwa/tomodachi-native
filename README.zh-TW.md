@@ -46,6 +46,7 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 - **像一般的 Mac app：** 有遊戲圖示、全螢幕和三種視窗大小、暫停，截圖會存到你平常的截圖資料夾，關掉前會先問一聲。
 - **滑鼠、觸控板、鍵盤：** 滑鼠就像手指，點到哪裡就觸控哪裡。兩指手勢轉鏡頭，捏合和三指滑動對應肩鍵。按鍵都能在 `keymap.txt` 裡改（選單「編輯按鍵…」，⌘,）。
 - **畫質：** 視窗或全螢幕比遊戲的 1920 × 1080 大時，MetalFX 放大能讓邊緣和文字更清楚（選單「顯示 → MetalFX 放大」）。「遊戲 → 幀率」可以在原版的 30 FPS 和 60 FPS 之間切換，下次開啟遊戲時生效。
+- **寬螢幕：** 螢幕比 16:9 寬時，可以讓畫面填滿螢幕，兩側不再補黑邊：在終端機執行 `defaults write org.nxnative.010051f0207b2000.mac GameAspect screen`（也可以寫 `21:9` 這類比例），下次開啟遊戲時生效，最寬約 21.5:9。3D 畫面比例正確；選單、文字和捏 Mii 的預覽會跟著橫向拉寬（19.5:9 時寬 22%）。比 16:9 窄的螢幕維持 16:9。
 - **輸入名字：** 輸入框用的是遊戲本身的配色，支援你慣用的輸入法，也能直接貼上。
 - **13 種語言：** 遊戲語言預設跟著 Mac 的系統語言，也可以在「遊戲 → 遊戲語言」切換。
 - **存檔** 放在 `~/Library/Application Support/nxnative/010051F0207B2000/save`。
@@ -77,4 +78,4 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 
 ## 授權與致謝
 
-MIT 授權（見 [LICENSE](LICENSE)）。程式延續自 seedds 的 [nxnative](https://github.com/seedds/smbw-mobile)，原生執行的做法最早來自 [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)，著色器翻譯用的是 Ryujinx，60 FPS 的改法來自 Fl4sh9174 的模擬器模組。其他用到的專案和第三方授權，見英文版的 [Acknowledgements](README.md#acknowledgements) 和 [dm/third_party](dm/third_party/README.md)。
+MIT 授權（見 [LICENSE](LICENSE)）。程式延續自 seedds 的 [nxnative](https://github.com/seedds/smbw-mobile)，原生執行的做法最早來自 [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)，著色器翻譯用的是 Ryujinx，60 FPS 的改法和寬螢幕的線索來自 Fl4sh9174 的模擬器模組。其他用到的專案和第三方授權，見英文版的 [Acknowledgements](README.md#acknowledgements) 和 [dm/third_party](dm/third_party/README.md)。

@@ -145,6 +145,7 @@ In the app:
 - **Mouse:** in Tomodachi Life the mouse works like a finger: a click taps the screen where you click, and the right button is B. Other games capture the mouse when you click the picture; it then moves the game's hand, with the left button as A and the right as B, until you press ⌘ (or an unmapped Esc). Set `mouse:Left` in `keymap.txt` to `Pointer` or `A` to switch between the two. The trackpad turns the camera (two-finger scroll or rotate), pinches for ZL / ZR and swipes with three fingers for L / R.
 - **Menus:** pause (⌘P), screenshot to your screenshot folder (⇧⌘S), window sizes (⌘1–⌘3), full screen (⌃⌘F, or the green button), Edit Controls (⌘,) to open `keymap.txt`, which is reread when you come back to the game. Closing the window asks before quitting.
 - **Picture:** **View → MetalFX Upscaling** (on by default) enlarges the game picture with MetalFX instead of a plain bilinear stretch. **Game → Frame Rate** appears when the game's profile has a 60 FPS cut; the choice is stored as `FrameRate` in the app's defaults and applies the next time the game opens.
+- **Wide screens:** on a screen wider than 16:9, Tomodachi Life can fill the screen instead of adding black bars at the sides: `defaults write org.nxnative.<title ID in lower case>.mac GameAspect screen`, or a ratio such as `21:9` or a size such as `2340x1080` (`DM_ASPECT` does the same for a run from a terminal). The 3D view keeps its proportions; menus, text and the Mii editor's preview are stretched sideways to the same width (by 22% at 19.5:9). It applies the next time the game opens and goes up to about 21.5:9. Screens narrower than 16:9 keep 16:9.
 - **Text entry:** names and other text are typed in a sheet over the game, with paste and your input methods.
 
 ## Install and play
@@ -248,6 +249,7 @@ Record on the game version you ship. At launch the log names each list it read a
 - **Shaders:** 14,388 in the tables, of which 14,381 compile.
 - **Touch:** the game takes touch only in some scenes, such as Mii editing. Two per-build cuts make every scene take the touch pointer, so a mouse click taps the screen.
 - **60 FPS:** the optional cut `fps60` sets the game's present interval to 1. The game then halves its time step, so it runs at its normal speed. The address comes from Fl4sh9174's mod.
+- **Wide screens:** three parameter slots replace the game's hard-coded 1920 × 1080 (main render size, swapchain size, per-frame crop width), and the perspective projection constructor swaps an aspect of exactly 16:9 for the output's, which fixes the 3D cameras. The 2D layer stays in the game's 1280 × 720 virtual screen and is stretched to the output width, so pointer, touch and the markers over Miis stay aligned. The 1280 × 720 pair next to the render size is that virtual screen: widening it gives an unstretched UI canvas, but the game's many fixed 1280 × 720 screen-space conversions (hand cursor bounds, markers) then miss. Widths above 2580 are not supported (Fl4sh9174's 2580 × 1080 mod notes crashes beyond it); below 16:9 is not offered.
 
 ## Tools (`dm/tools`)
 
@@ -265,7 +267,7 @@ Record on the game version you ship. At launch the log names each list it read a
 This project is built on other people's work:
 
 - **[nxnative](https://github.com/seedds/smbw-mobile)** (MIT) by seedds: this repository continues it, with Tomodachi Life and the Mac app added. Later nxnative work is ported by hand, such as handing a submission to the GPU every 64 draws.
-- **[Fl4sh9174](https://github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods)**: the 60 FPS change for Tomodachi Life (one instruction in the frame-rate control) comes from their emulator mod.
+- **[Fl4sh9174](https://github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods)**: the 60 FPS change for Tomodachi Life (one instruction in the frame-rate control) comes from their emulator mod, and their 21:9 and 2580 × 1080 mods pointed to the projection and render-size code that wide-screen support starts from.
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative (first called smbw-mobile) started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
 - **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2 in `dm/third_party/ryujinx`, with one change: the FMZ multiply mode (`Instructions/InstEmitFloatArithmetic.cs`, where a zero factor makes the product 0 as on Maxwell)) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).

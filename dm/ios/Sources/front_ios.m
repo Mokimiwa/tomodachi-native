@@ -1,6 +1,6 @@
-// iOS 前端（front.h 的 iOS 實現）：16:9 的 Metal 視圖居中（兩側留黑邊）+ 全屏的虛擬手柄層（DmGamepad.m，按鍵疊在畫面上）。
+// iOS 前端（front.h 的 iOS 實現）：按畫面形狀（缺省 16:9，見 game_aspect）居中的 Metal 視圖（多出的兩側 / 上下留黑邊）+ 全屏的虛擬手柄層（DmGamepad.m，按鍵疊在畫面上）。
 // 宿主在 main.m 起的大棧線程上跑；front_run 直接在調用線程跑客體。
-// iOS front end (the iOS implementation of front.h): a centered 16:9 Metal view (black bars on both sides) + a full-screen virtual gamepad layer (DmGamepad.m, controls drawn over the picture).
+// iOS front end (the iOS implementation of front.h): a Metal view centred at the picture's shape (16:9 by default, see game_aspect; black bars on the spare sides) + a full-screen virtual gamepad layer (DmGamepad.m, controls drawn over the picture).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -10,6 +10,7 @@
 #include "front.h"
 #include "hle.h"
 #include "dm.h"
+#include "dm_aspect.h"
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
@@ -17,6 +18,22 @@ void front_ios_boot(void);
 int front_ios_boot_ok(void);
 
 static CAMetalLayer *g_layer;
+
+// 畫面寬高比（dm_aspect.h）：環境變量 DM_ASPECT 優先，其次本 App 的設定 GameAspect；「screen」= 這台設備橫放的形狀；沒給 = 16:9。
+// 第一次在主線程問（viewDidLoad，宿主起跑之前），之後各線程只讀這個定好的值（UIScreen 只許主線程碰）
+// Picture aspect ratio (dm_aspect.h): the environment variable DM_ASPECT first, then this app's setting GameAspect; "screen" = this device's landscape shape; none = 16:9.
+// First asked on the main thread (viewDidLoad, before the host starts); afterwards every thread only reads the settled value (UIScreen may only be touched on the main thread)
+static double game_aspect(void) {
+    static double a; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *e = getenv("DM_ASPECT"); NSString *pref = e ? nil : [NSUserDefaults.standardUserDefaults stringForKey:@"GameAspect"];
+        double screen = 0;
+        if (NSThread.isMainThread) { CGSize n = UIScreen.mainScreen.nativeBounds.size; screen = fmin(n.width, n.height) > 0 ? fmax(n.width, n.height) / fmin(n.width, n.height) : 0; }
+        a = dm_aspect_parse(e ? e : pref.UTF8String, screen);
+        if (e || pref) LOG("前端：畫面寬高比「%s」→ %.4f", e ? e : pref.UTF8String, a);
+    });
+    return a;
+}
 
 @interface DmGameView : UIView
 @end
@@ -46,6 +63,7 @@ static CAMetalLayer *g_layer;
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
+    game_aspect();   // 在主線程定下畫面寬高比 | settle the picture aspect ratio on the main thread
     if (!front_ios_boot_ok()) {   // 沒有遊戲文件：給一句提示，不起宿主 | No game files: show a hint and do not start the host
         UILabel *lb = [[UILabel alloc] initWithFrame:CGRectInset(self.view.bounds, 40, 40)];
         lb.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -63,8 +81,9 @@ static CAMetalLayer *g_layer;
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
-    CGFloat w = b.size.width, h = b.size.height;   // 16:9 等比放進整屏 | Fit 16:9 into the whole screen
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    uint64_t r = front_game_res(1); CGFloat pa = (CGFloat)(uint32_t)r / (uint32_t)(r >> 32);   // 遊戲輸出的形狀等比放進整屏 | Fit the shape of the game's output into the whole screen
+    CGFloat w = b.size.width, h = b.size.height;
+    if (w / h > pa) w = h * pa; else h = w / pa;
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
 }
 - (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; front_ios_boot(); }
@@ -76,7 +95,7 @@ static CAMetalLayer *g_layer;
 UIViewController *front_ios_root(void) { return [DmRootVC new]; }
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
-uint64_t front_game_res(int docked) { return docked ? 900ull << 32 | 1600 : 720ull << 32 | 1280; }   // 同 Mac：原版 16:9 常數 | Same as Mac: the original 16:9 constants
+uint64_t front_game_res(int docked) { return dm_aspect_game_res(docked, game_aspect()); }   // 同 Mac：遊戲檔案的 16:9 尺寸，按畫面寬高比同高放寬 | Same as Mac: the game profile's 16:9 sizes, widened at the same height for the picture aspect ratio
 void front_run(void (*guest)(void)) { guest(); }   // 已在 main.m 的大棧線程上 | Already on main.m's big-stack thread
 
 // 軟鍵盤輸入框：主線程彈 UIAlertController，調用線程等結果 | Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result

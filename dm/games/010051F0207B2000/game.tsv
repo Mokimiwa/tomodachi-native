@@ -59,3 +59,11 @@ network_clock	synced
 # Mac 滑鼠左鍵默認點哪觸屏哪：改寫器剪口讓界面每頁都收觸屏指針（dm/tools/patch_nso.py 本作條目），點按鈕就選中，比鎖定滑鼠推小手（像推搖桿）順手。玩家的鍵位表仍可改回 mouse:Left A
 # The Mac left mouse button defaults to touching where clicked: a rewriter cut makes every UI page accept the touch pointer (this title's entry in dm/tools/patch_nso.py), so clicking a button selects it, which handles better than capturing the mouse to push the hand (like a stick). The player's key table can still set mouse:Left A
 mouse_left	Pointer
+
+# ---- 畫面 | Picture ----
+# 主機 1920x1080、掌機 1280x720（遊戲寫死的值，改寫器換成參數位）。寬屏時主機模式同高放寬到最多 2580（約 21.5:9）：
+# 3D 比例正確，界面整層橫向拉寬（見 dm/tools/patch_nso.py 本作 PARAMS）。再寬的寬度 Fl4sh9174 的 2580x1080 模組註明會崩，這裡也沒驗過；比 16:9 窄的屏幕不放窄（界面會被壓扁），仍出 16:9
+# Docked 1920x1080, handheld 1280x720 (values hard-coded in the game, replaced by parameter slots in the rewriter). When wide, docked mode widens at the same height up to 2580 (about 21.5:9):
+# 3D keeps its proportions and the UI layer is stretched sideways (see this title's PARAMS in dm/tools/patch_nso.py). Fl4sh9174's 2580x1080 mod notes that anything wider crashes, and wider was not verified here either; screens narrower than 16:9 are not narrowed (the UI would be squeezed) and still get 16:9
+render_size	1920x1080 1280x720
+render_wide_max	2580
