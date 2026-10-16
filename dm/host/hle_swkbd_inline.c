@@ -41,6 +41,9 @@ HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard10InitializeEPv", "內嵌鍵盤：原版�
     (void)self; (void)work; g_ik.inited = 1; g_ik.init_reported = 0; g_ik.shown = 0; g_ik.hide_pending = 0; LOG("swkbd 內嵌鍵盤：初始化（宿主接管，鍵盤畫面不給）"); return 1;
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard8FinalizeEv", "內嵌鍵盤收尾", void, h_ik_Fin, void *self) { (void)self; g_ik.inited = 0; LOG("swkbd 內嵌鍵盤：Finalize"); }
+// 析構（D1）：原版會收掉小程序，宿主沒起小程序，只清宿主狀態（超級馬力歐 3D 世界 + 狂怒世界直接析構，上游 42a50ef）
+// Destructor (D1): the original closes the applet; the host never started one and only clears its own state (Super Mario 3D World + Bowser's Fury destroys it directly, upstream 42a50ef)
+HLE_FORCE("_ZN2nn5swkbd14InlineKeyboardD1Ev", "內嵌鍵盤析構：沒起小程序，只清宿主狀態", void, h_ik_Dtor, void *self) { h_ik_Fin(self); }
 // 畫面內存：原版按 1280x720 RGBA8 的間接圖層問 vi（服務不在就崩）；宿主給同樣大小，畫面不填
 // Picture memory: on hardware vi is asked for a 1280x720 RGBA8 indirect layer (crashes without the service); the host gives the same size and never fills it
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard25GetImageMemoryRequirementEPmS2_", "鍵盤畫面內存需求：1280x720 RGBA8，0x1000 對齊", void, h_ik_ImgReq, void *self, uint64_t *size, uint64_t *align) {

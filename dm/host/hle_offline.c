@@ -13,6 +13,9 @@ static _Alignas(16) uint8_t g_ev_ldn[0x100];
 HLE_FORCE("_ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE", "遙測報告保存（用戶）；不發送，報成功", Result, h_prepo_SaveU, void *self, const void *uid) { (void)self; (void)uid; return RES_OK; }
 HLE_FORCE("_ZN2nn5prepo10PlayReport4SaveEv", "遙測報告保存；不發送，報成功", Result, h_prepo_Save, void *self) { (void)self; return RES_OK; }
 HLE_FORCE("_ZN2nn5prepo10InitializeEv", "遙測初始化：原版連 prepo 服務（經 sm），宿主沒有服務進程；空操作（Engage 顯式調用）", Result, h_prepo_Init, void) { return RES_OK; }
+// 往報告裡加會話號：真機要先連 prepo 服務取會話（超級馬力歐 3D 世界 + 狂怒世界進存檔選擇時調）；宿主不加，報成功。聯網狀態那個見 hle_sdk20.c
+// Add the session ID to a report: on hardware it first connects to the prepo service for the session (Super Mario 3D World + Bowser's Fury calls it entering the save select); the host adds nothing and reports success. The connection-status one is in hle_sdk20.c
+HLE_FORCE("_ZN2nn5prepo12AddSessionIdEPNS0_10PlayReportEPKc", "遙測會話號：不連服務，不加，報成功", Result, h_prepo_AddSess, void *rep, const char *key) { (void)rep; (void)key; return RES_OK; }
 HLE_FORCE("_ZN2nn5prepo28RequestImmediateTransmissionEv", "遙測立即上傳；不發送，報成功", Result, h_prepo_Tx, void) { return RES_OK; }
 
 // ---------- ldn：本地無線。初始化即失敗，狀態恆為「無」 ----------
@@ -78,6 +81,12 @@ HLE_FORCE("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", "離線：網絡請求�
 HLE_FORCE("_ZN2nn4nifm22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_", "離線：無 IP 配置", Result, h_nifm_IpCfg, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d, uint32_t *e) {
     uint32_t *p[5] = {a, b, c, d, e}; for (int i = 0; i < 5; i++) if (p[i]) *p[i] = 0; return RES_FAIL;
 }
+// SDK 10 的同名函數參數是 socket::InAddr / in_addr，與上面和 hle_net.c 裡的另一代剛好反過來（超級馬力歐 3D 世界 + 狂怒世界）
+// SDK 10's functions of the same name take socket::InAddr / in_addr, exactly the other way round from the generation above and in hle_net.c (Super Mario 3D World + Bowser's Fury)
+HLE_FORCE("_ZN2nn4nifm22GetCurrentIpConfigInfoEPNS_6socket6InAddrES3_S3_S3_S3_", "離線：無 IP 配置（SDK 10 重載）", Result, h_nifm_IpCfg10, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d, uint32_t *e) {
+    uint32_t *p[5] = {a, b, c, d, e}; for (int i = 0; i < 5; i++) if (p[i]) *p[i] = 0; return RES_FAIL;
+}
+HLE_FORCE("_ZN2nn4nifm26GetCurrentPrimaryIpAddressEP7in_addr", "離線：無 IP（SDK 10 重載）", Result, h_nifm_GetIp10, uint32_t *a) { if (a) *a = 0; return RES_FAIL; }
 // EnvironmentIdentifier = char[8]：零售環境 "lp1"
 // EnvironmentIdentifier = char[8]: retail environment "lp1"
 HLE_FORCE("_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE", "服務器環境名：零售 lp1", void, h_nsd_EnvId, char *out) { memset(out, 0, 8); memcpy(out, "lp1", 3); }

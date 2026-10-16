@@ -77,6 +77,11 @@ static int opmode(void) { return dm_opmode(); }
 
 // 截圖 / 錄像開關：宿主無系統截圖服務，空操作
 // Screenshot / video recording switches: the host has no system screenshot service, no-op
+HLE_FORCE("_ZN2nn2oe17FinishStartupLogoEv", "收起系統啓動畫面（經 am 應用代理）；宿主沒有啓動畫面", void, h_oe_FinishLogo, void) {}   // 銀河戰士 生存恐懼在 main+0xadfed0 調 | Metroid Dread calls it at main+0xadfed0
+HLE_FORCE("_ZN2nn2oe44SetUserInactivityDetectionTimeExtendedUnsafeEb", "無操作自動熄屏時長（經 am）；宿主不熄屏", void, h_oe_InactivityExt, int on) { (void)on; }
+// 啓動參數（別的程序帶著參數啓動本作時才有；返回 bool）：宿主從來不帶 | Launch parameter (present only when another program launched this one with one; returns bool): the host never passes one
+HLE_FORCE("_ZN2nn2oe21TryPopLaunchParameterEPmPvm", "啓動參數：沒有", unsigned, h_oe_PopLaunchParam, size_t *out, void *buf, size_t n) { (void)buf; (void)n; if (out) *out = 0; return 0; }
+HLE_FORCE("_ZN2nn2oe24SetAlbumImageOrientationENS_5album16ImageOrientationE", "截圖方向（經 am）；宿主無系統截圖", void, h_oe_AlbumOrient, int o) { (void)o; }
 HLE_FORCE("_ZN2nn2oe15EnableRecordingEv", "錄像開關；宿主無系統錄像", void, h_oe_EnableRec, void) {}
 HLE_FORCE("_ZN2nn2oe16DisableRecordingEv", "錄像開關；宿主無系統錄像", void, h_oe_DisableRec, void) {}
 HLE_FORCE("_ZN2nn2oe16EnableScreenShotEv", "截圖開關；宿主無系統截圖", void, h_oe_EnableShot, void) {}
@@ -86,6 +91,9 @@ HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "截圖開關；宿主無系統截�
 // OperationMode: 0 Handheld, 1 Console; PerformanceMode: 0 Normal, 1 Boost (one-to-one with the operation mode)
 HLE_FORCE("_ZN2nn2oe16GetOperationModeEv", "運行模式查詢；按 DM_OPMODE 給固定值", int, h_oe_GetOpMode, void) { int u = g_ui_opmode; if (atomic_exchange(&g_ui_armed, 0)) atomic_fetch_add(&g_ui_reads, 1); return u >= 0 ? u : opmode(); }
 HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "性能模式查詢；與運行模式一致", int, h_oe_GetPerfMode, void) { return opmode(); }
+// apm 的頻率檔：Normal 0x00010000（CPU 1020 / GPU 384 / EMC 1600 MHz，掌機缺省）、Boost 0x00010001（GPU 768 MHz，主機缺省）
+// apm performance configurations: Normal 0x00010000 (CPU 1020 / GPU 384 / EMC 1600 MHz, the handheld default), Boost 0x00010001 (GPU 768 MHz, the docked default)
+HLE_FORCE("_ZN2nn2oe27GetPerformanceConfigurationENS0_15PerformanceModeE", "查 CPU/GPU 頻率檔（經 apm）；按模式報缺省檔", int, h_oe_GetPerfCfg, int mode) { return mode == 1 ? 0x00010001 : 0x00010000; }
 HLE_FORCE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", "設 CPU/GPU 頻率檔；宿主不調頻", void, h_oe_SetPerfCfg, int mode, int cfg) {
     LOG("oe::SetPerformanceConfiguration mode=%d cfg=%#x（忽略）", mode, cfg);
 }

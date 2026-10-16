@@ -161,6 +161,11 @@ HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14
 // Mouse / keyboard: not connected
 HLE_FORCE("_ZN2nn3hid15InitializeMouseEv", "鼠標；宿主不提供", void, h_hid_InitMouse, void) {}
 HLE_FORCE("_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi", "鼠標狀態：0 條", int, h_hid_MouseStates, void *out, int n) { (void)out; (void)n; return 0; }
+// 單條（十三機兵防衛圈每幀調；沒接管時 sdk 裡沒初始化的鼠標資源中止）：MouseState 0x28 字節 {採樣號 i64, x, y, dx, dy, 滾輪 dx, dy, 按鍵, 屬性}，屬性 0 = 未連接
+// Single state (13 Sentinels calls it every frame; without the hook the sdk aborts on its uninitialized mouse resource): MouseState is 0x28 bytes {sampling number i64, x, y, dx, dy, wheel dx, dy, buttons, attributes}; attributes 0 = not connected
+HLE_FORCE("_ZN2nn3hid13GetMouseStateEPNS0_10MouseStateE", "鼠標狀態：未連接（MouseState 0x28 字節清零）", void, h_hid_MouseState, void *s) {
+    memset(s, 0, 0x28); ((int64_t *)s)[0] = atomic_fetch_add(&g_sampling, 1) + 1;
+}
 HLE_FORCE("_ZN2nn3hid18InitializeKeyboardEv", "鍵盤；宿主不提供", void, h_hid_InitKbd, void) {}
 HLE_FORCE("_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE", "鍵盤狀態：未連接（KeyboardState 0x30 字節清零）", void, h_hid_KbdState, void *s) {
     memset(s, 0, 0x30); ((int64_t *)s)[0] = atomic_fetch_add(&g_sampling, 1) + 1;
@@ -213,6 +218,14 @@ TOUCH(1) TOUCH(2) TOUCH(3) TOUCH(4) TOUCH(5) TOUCH(6) TOUCH(7) TOUCH(8) TOUCH(9)
 HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "六軸；宿主不提供", void, h_hid_SixStop, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "六軸當前狀態：未連接", void, h_hid_SixState, void *s, const uint32_t *h) { (void)h; memset(s, 0, 0x60); }
 HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "六軸靜止：是", unsigned, h_hid_SixRest, const uint32_t *h) { (void)h; return 1; }
+// 主機自帶的六軸（SevenSixAxisSensor，掌機模式下的機身姿態；塞爾達傳說 曠野之息）：要工作緩衝、經 hid 服務開關。宿主不提供：開關成功、狀態 0 條
+// The console's own six-axis sensor (SevenSixAxisSensor, the body's orientation in handheld mode; The Legend of Zelda: Breath of the Wild): takes a work buffer and is switched through the hid service. The host provides none: switching succeeds, 0 states
+HLE_FORCE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", "機身六軸初始化；宿主不提供", Result, h_hid_SevenInit, void *buf, size_t n) { (void)buf; (void)n; return RES_OK; }
+HLE_FORCE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", "機身六軸", Result, h_hid_SevenFini, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid23StartSevenSixAxisSensorEv", "機身六軸；宿主不提供", Result, h_hid_SevenStart, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid22StopSevenSixAxisSensorEv", "機身六軸", Result, h_hid_SevenStop, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv", "機身六軸時間戳", void, h_hid_SevenReset, void) {}
+HLE_FORCE("_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi", "機身六軸狀態：0 條", int, h_hid_SevenStates, void *out, int n) { (void)out; (void)n; return 0; }
 HLE_FORCE("_ZN2nn3hid25EnableSixAxisSensorFusionERKNS0_19SixAxisSensorHandleEb", "六軸融合；宿主忽略", void, h_hid_SixFusionOn, const uint32_t *h, uint32_t on) { (void)h; (void)on; }
 HLE_FORCE("_ZN2nn3hid28IsSixAxisSensorFusionEnabledERKNS0_19SixAxisSensorHandleE", "六軸融合：未開", unsigned, h_hid_SixFusionQ, const uint32_t *h) { (void)h; return 0; }
 HLE_FORCE("_ZN2nn3hid25GetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleE", "陀螺零漂模式：標準", int, h_hid_GyroGet, const uint32_t *h) { (void)h; return 1; }

@@ -553,6 +553,8 @@ HLE_FORCE("_ZN2nn2fs6CommitEPKc", "fsp-srv；事務式存檔：工作目錄整�
     pthread_mutex_unlock(&g_lock);
     return r;
 }
+// SDK 11 的舊名：CommitSaveData(掛載名) 即後來的 Commit（銀河戰士 生存恐懼） | SDK 11's old name: CommitSaveData(mount name) is the later Commit (Metroid Dread)
+HLE_FORCE("_ZN2nn2fs14CommitSaveDataEPKc", "fsp-srv；同 Commit（SDK 11 舊名）", Result, h_fs_CommitSaveData, const char *name) { return h_fs_Commit(name); }
 HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv；掛載表常駐，卸載為空操作", void, h_fs_Unmount, const char *name) { (void)name; }
 
 // ---------- 文件 ----------
@@ -745,6 +747,25 @@ static int rm_tree(const char *p) {
 }
 HLE_FORCE("_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc", "fsp-srv → 遞歸刪除（只在可寫掛載內）", Result, h_fs_DeleteDirRec, const char *path) {
     HP(path); RW(); return rm_tree(hp) ? err_res("rmtree", hp) : RES_OK;
+}
+// 清空目錄、留下目錄本身（十三機兵防衛圈） | empty a directory and keep the directory itself (13 Sentinels)
+HLE_FORCE("_ZN2nn2fs25CleanDirectoryRecursivelyEPKc", "fsp-srv → 遞歸刪除目錄內容、保留目錄（只在可寫掛載內）", Result, h_fs_CleanDirRec, const char *path) {
+    HP(path); RW();
+    DIR *d = opendir(hp); if (!d) return err_res("cleandir", hp);
+    struct dirent *e; char c[1024]; int rc = 0;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        snprintf(c, sizeof c, "%s/%s", hp, e->d_name);
+        rc |= e->d_type == DT_DIR ? rm_tree(c) : unlink(c);
+    }
+    closedir(d);
+    return rc ? err_res("cleandir", hp) : RES_OK;
+}
+// 文件數據緩存（fs 進程裡的全局讀緩存）：宿主直讀頁緩存，接下緩衝區不用 | file data cache (a global read cache in the fs process): the host reads through the page cache and leaves the buffer unused
+HLE_FORCE("_ZN2nn2fs25EnableGlobalFileDataCacheEPvm", "fsp-srv 全局讀緩存；宿主不用", void, h_fs_EnableGlobalCache, void *buf, size_t sz) { (void)buf; (void)sz; }
+// SDK 11（銀河戰士 生存恐懼）：刪空目錄 | SDK 11 (Metroid Dread): delete an empty directory
+HLE_FORCE("_ZN2nn2fs15DeleteDirectoryEPKc", "fsp-srv → rmdir(2)（目錄須空）", Result, h_fs_DeleteDir, const char *path) {
+    HP(path); RW(); return rmdir(hp) ? err_res("rmdir", hp) : RES_OK;
 }
 HLE_FORCE("_ZN2nn2fs10RenameFileEPKcS2_", "fsp-srv → rename(2)", Result, h_fs_RenameFile, const char *from, const char *to) {
     HP(from); RW(); char hp2[1024];

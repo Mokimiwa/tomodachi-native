@@ -123,6 +123,12 @@ HLE_FORCE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", "共享字體大
 // 是否跑在 Switch 2（代號 Ounce）上（返回 bool）：宿主按 Switch 1 報假。馬力歐 1.2.1 據此決定要不要數追加內容（升級包）、提示升級到 Switch 2 版
 // Whether running on a Switch 2 (codename Ounce) (returns bool): the host reports false, as a Switch 1. Mario 1.2.1 uses it to decide whether to count add-on content (the upgrade pack) and suggest the Switch 2 Edition
 HLE_FORCE("_ZN2nn2pl16IsRunningOnOunceEv", "是否 Switch 2：否", unsigned, h_pl_IsOunce, void) { return 0; }
+// 塞爾達傳說 曠野之息（SDK 20）：先請求裝載共享字體再查狀態；宿主的替身字體隨取隨有。VR 模式（Labo VR 眼鏡）：宿主不進 VR，查詢恆否，進出空操作
+// The Legend of Zelda: Breath of the Wild (SDK 20): asks for the shared fonts to be loaded before querying their state; the host's stand-in fonts are there on demand. VR mode (the Labo VR goggles): the host never enters VR; the query is always false, entering / leaving is a no-op
+HLE_FORCE("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", "請求裝載共享字體；替身字體隨取隨有，空操作", void, h_pl_ReqLoad, int type) { (void)type; }
+HLE_FORCE("_ZN2nn2pl8IsVrModeEv", "VR 模式：否", unsigned, h_pl_IsVr, void) { return 0; }
+HLE_FORCE("_ZN2nn2pl11BeginVrModeEv", "進 VR 模式（經 am）；宿主不進", void, h_pl_BeginVr, void) { LOG("pl::BeginVrMode（宿主不進 VR）"); }
+HLE_FORCE("_ZN2nn2pl9EndVrModeEv", "出 VR 模式（經 am）", void, h_pl_EndVr, void) {}
 
 // ---------- ec：商店小程序（升級到 Switch 2 版的頁面）----------
 // 商店屬排除範圍：空操作。遊戲不看返回值（兩個重載都按無返回值處理）
@@ -164,6 +170,18 @@ HLE_FORCE("_ZN2nn3nfp14GetDeviceStateERKNS0_12DeviceHandleE", "設備狀態：�
 HLE_FORCE("_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE", "標籤信息：沒有標籤", Result, h_nfp_TagInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetTagInfo"); }
 HLE_FORCE("_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE", "型號信息：沒有標籤", Result, h_nfp_ModelInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetModelInfo"); }
 HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeENS0_11MountTargetE", "掛載標籤：沒有標籤", Result, h_nfp_Mount, const NfpDeviceHandle *h, int model, int target) { (void)h; (void)model; (void)target; return nfp_no_tag("Mount"); }
+// 塞爾達傳說 曠野之息（SDK 20）另用的一組：標籤進出事件（綁內核事件、恆不觸發；不接管時 SDK 的實現在 sdk+0x3f2a78 讀空指針）、兩參數的 Mount、
+//   Unmount、讀通用 / 登記信息（都按沒有標籤答）、庫狀態（1 = 已初始化）與 Finalize
+// Another group The Legend of Zelda: Breath of the Wild (SDK 20) uses: tag activate / deactivate events (bound to a kernel event that never fires; without the take-over the SDK's code reads a null pointer at sdk+0x3f2a78), the two-argument Mount,
+//   Unmount, reading common / register info (all answered as no tag), the library state (1 = initialized) and Finalize
+HLE_FORCE("_ZN2nn3nfp19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "標籤放上事件；綁內核事件、恆不觸發", Result, h_nfp_AttachAct, void *ev, const NfpDeviceHandle *h) { (void)h; hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn3nfp21AttachDeactivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "標籤拿走事件；綁內核事件、恆不觸發", Result, h_nfp_AttachDeact, void *ev, const NfpDeviceHandle *h) { (void)h; hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn3nfp5MountERKNS0_12DeviceHandleENS0_9ModelTypeE", "掛載標籤（兩參數）：沒有標籤", Result, h_nfp_Mount2, const NfpDeviceHandle *h, int model) { (void)h; (void)model; return nfp_no_tag("Mount"); }
+HLE_FORCE("_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE", "卸載標籤：沒有標籤", Result, h_nfp_Unmount, const NfpDeviceHandle *h) { (void)h; return nfp_no_tag("Unmount"); }
+HLE_FORCE("_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE", "通用信息：沒有標籤", Result, h_nfp_CommonInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetCommonInfo"); }
+HLE_FORCE("_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE", "登記信息：沒有標籤", Result, h_nfp_RegInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetRegisterInfo"); }
+HLE_FORCE("_ZN2nn3nfp8GetStateEv", "amiibo 庫狀態：已初始化（1）", int, h_nfp_LibState, void) { return 1; }
+HLE_FORCE("_ZN2nn3nfp8FinalizeEv", "amiibo 庫收尾；宿主無會話", void, h_nfp_Fini, void) {}
 HLE_FORCE("_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE", "寫回標籤：沒有標籤", Result, h_nfp_Flush, const NfpDeviceHandle *h) { (void)h; return nfp_no_tag("Flush"); }
 HLE_FORCE("_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj", "打開應用區：沒有標籤", Result, h_nfp_OpenArea, const NfpDeviceHandle *h, uint32_t id) { (void)h; (void)id; return nfp_no_tag("OpenApplicationArea"); }
 HLE_FORCE("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "讀應用區：沒有標籤", Result, h_nfp_GetArea, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) { (void)buf; (void)h; (void)sz; if (n) *n = 0; return nfp_no_tag("GetApplicationArea"); }
@@ -187,6 +205,11 @@ static void *vsync_thread(void *ev) {
         hle_signal_system_event(ev); next += period; if (now_ns() > next + 4 * period) next = now_ns() + period;   // 落後太多不追幀 | do not try to catch up when far behind
     }
     return NULL;
+}
+// 間接圖層（小程序畫面交給遊戲去畫，如內嵌鍵盤）的圖像內存需求：真機問 vi 服務。按 RGBA8 線性算、4 KB 對齊（超級馬力歐 3D 世界 + 狂怒世界的內嵌鍵盤問 1280×720）
+// Image memory needed for an indirect layer (an applet's picture handed to the game to draw, such as the inline keyboard): on hardware it asks the vi service. Computed as linear RGBA8, 4 KB aligned (Super Mario 3D World + Bowser's Fury's inline keyboard asks for 1280x720)
+HLE_FORCE("_ZN2nn2vi33GetIndirectImageMemoryRequirementEPmS1_ii", "間接圖層圖像內存：RGBA8 線性、4 KB 對齊", Result, h_vi_IndirectReq, size_t *size, size_t *align, int w, int h) {
+    *size = ((size_t)(w > 0 ? w : 0) * (size_t)(h > 0 ? h : 0) * 4 + 0xfff) & ~(size_t)0xfff; *align = 0x1000; return RES_OK;
 }
 HLE_FORCE("_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE", "垂直同步事件：宿主線程按 60 Hz 觸發", Result, h_vi_VsyncEvent, void *ev, void *disp) {
     (void)disp; hle_bind_system_event(ev, 1);
@@ -221,4 +244,15 @@ static const char *const k_lang_code[] = {"ja", "en-US", "fr", "de", "it", "es",
 HLE_FORCE("_ZN2nn8settingseqERKNS0_8LanguageERKNS0_12LanguageCodeE", "語言枚舉與語言代碼比較（返回 bool）", unsigned, h_set_LangEq, const int32_t *lang, const char *code) {
     if ((unsigned)*lang >= sizeof k_lang_code / sizeof *k_lang_code) return 0;
     return strncmp(k_lang_code[*lang], code, 8) == 0;
+}
+// 反過來的比較與按枚舉造代碼（超級馬力歐 3D 世界 + 狂怒世界，SDK 10：nnMain 裡第一次比較就去連 settings 服務）
+// The reversed comparison and making a code from the enum (Super Mario 3D World + Bowser's Fury, SDK 10: its first comparison in nnMain connected to the settings service)
+HLE_FORCE("_ZN2nn8settingseqERKNS0_12LanguageCodeERKNS0_8LanguageE", "語言代碼與語言枚舉比較（返回 bool）", unsigned, h_set_LangEq2, const char *code, const int32_t *lang) {
+    if ((unsigned)*lang >= sizeof k_lang_code / sizeof *k_lang_code) return 0;
+    return strncmp(k_lang_code[*lang], code, 8) == 0;
+}
+HLE_FORCE("_ZN2nn8settings12LanguageCode4MakeENS0_8LanguageE", "語言枚舉 → 語言代碼（按值返回 8 字節）", uint64_t, h_set_LangMake, int lang) {
+    char code[8] = {0};
+    if ((unsigned)lang < sizeof k_lang_code / sizeof *k_lang_code) strncpy(code, k_lang_code[lang], sizeof code);
+    uint64_t v; memcpy(&v, code, 8); return v;
 }

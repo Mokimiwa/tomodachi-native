@@ -19,6 +19,11 @@ HLE_FORCE("_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi", "已打開用戶列表�
     if (max > 0) { out[0] = k_uid; *n = 1; }
     return RES_OK;
 }
+HLE_FORCE("_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi", "全部用戶列表；恆為本地用戶 1 個（超級馬力歐 3D 世界 + 狂怒世界）", Result, h_acc_ListAll, int *n, Uid *out, int max) {
+    *n = 0;
+    if (max > 0) { out[0] = k_uid; *n = 1; }
+    return RES_OK;
+}
 HLE_FORCE("_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE", "用戶選擇小程序；宿主直接選本地用戶", Result, h_acc_ShowSel, Uid *out, const void *settings) {
     (void)settings; *out = k_uid; return RES_OK;
 }

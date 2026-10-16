@@ -85,6 +85,22 @@ HLE_FORCE("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditi
               ai->dst = tm.tm_isdst > 0; ai->offset = (int32_t)tm.tm_gmtoff; }
     return RES_OK;
 }
+// 反向：本地日曆 → 絕對秒（十三機兵防衛圈）。夏令時切換時一個本地時刻可對應 0 或 2 個絕對秒，宿主 mktime 只給一個
+// The reverse: local calendar → absolute seconds (13 Sentinels). Around a daylight-saving switch one local time maps to 0 or 2 absolute seconds; the host's mktime gives one
+HLE_FORCE("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeE",
+          "連 time 服務的時區規則；改用宿主 mktime", Result, h_time_ToPosixTime, int *count, int64_t *out, int n, const CalendarTime *ct) {
+    struct tm tm = {.tm_year = ct->year - 1900, .tm_mon = ct->month - 1, .tm_mday = ct->day, .tm_hour = ct->hour, .tm_min = ct->minute, .tm_sec = ct->second, .tm_isdst = -1};
+    time_t t = mktime(&tm);
+    if (count) *count = n > 0;
+    if (n > 0 && out) out[0] = (int64_t)t;
+    return RES_OK;
+}
+// 穩定時鐘（開機起的秒數 + 時鐘源號，16 字節 UUID）：宿主單調時鐘的秒數，源號固定。GetSpanBetween 在 sdk 裡原樣跑：源號相同才相減
+// Steady clock (seconds since boot + a clock source ID, a 16-byte UUID): the host's monotonic seconds with a fixed source ID. GetSpanBetween runs as is in sdk: it subtracts only when the source IDs match
+HLE_FORCE("_ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyClockTimePointE", "穩定時鐘 → 宿主單調時鐘（秒），源號固定", Result, h_time_SteadyNow, uint8_t *out) {
+    int64_t s = (int64_t)(clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1000000000ull);
+    memcpy(out, &s, 8); memcpy(out + 8, "dmhost-steady-01", 16); return RES_OK;
+}
 // 本地時刻換算強制接宿主 libc：SDK 自帶的 localtime / localtime_r / mktime 沒有時區數據、恆按 UTC（宿主實測：編年史「首次發現」由
 // main+0xb04d34 調 localtime 再 strftime 出，差 8 小時）。真機 Switch 的 SDK 按系統時區換算，這裡跟宿主系統時區走才一致；
 // 宿主 TZ 平時 = 系統時區，只在 DM_FIXED_TIME 確定性對拍時釘 UTC（main.c）。struct tm 佈局兩邊相同（9 個 int、long 偏移、時區名指針）。
