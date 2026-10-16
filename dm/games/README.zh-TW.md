@@ -1,6 +1,6 @@
 # 遊戲檔案
 
-本移植認得的每個遊戲都有一個目錄 `dm/games/<名>/`，以基礎版的標題號命名：馬力歐是 `010015100B514000`，Engage 是 `0100A6301214E000`。目錄裡有：
+本移植認得的每個遊戲都有一個目錄 `dm/games/<名>/`，以基礎版的標題號命名：《朋友收集》是 `010051F0207B2000`。目錄裡有：
 
 - **`game.tsv`**：這個遊戲的常數，每行 `鍵<TAB>值`，注釋獨佔一行。
 - **著色器表**（`shader_split.py` 寫出）：`shader_map.tsv`（含 `.conflicts.tsv`）、`shader_facts.tsv`、`shader_pairs.tsv`。
@@ -36,7 +36,7 @@
 | `romfs_marker` | RomFS 裡必須有的路徑 |
 | `zip_store` | IPA 裡不再壓縮的擴展名 |
 | `mem_reserve`、`mem_alias`、`mem_stack`、`app_pool` | 客體地址空間分區與應用內存池（`hle_svc.c`） |
-| `present_interval` | `game`（缺省）：按遊戲設的出圖間隔出幀，同 Switch（遊戲設 2 就是 30 幀，iOS 上顯示節拍隨之 30 Hz；Engage 在 Switch 上設 2，2.0.0 `main` 的改寫剪口讓它設 1，見 `0100A6301214E000/game.tsv`）。`display`：不管遊戲設多少，每個顯示節拍一幀——只適合邏輯不按幀計數的遊戲（D2R 的邏輯按自己的 25 Hz 走）。`DM_PRESENT_INTERVAL=game` / `display` 可覆蓋，也可寫在 `Documents/env.txt` |
+| `present_interval` | `game`（缺省）：按遊戲設的出圖間隔出幀，同 Switch（遊戲設 2 就是 30 幀，iOS 上顯示節拍隨之 30 Hz；《朋友收集》設 2，它的可選改寫剪口 `fps60` 讓它設 1，見 `dm/tools/patch_nso.py`）。`display`：不管遊戲設多少，每個顯示節拍一幀——只適合邏輯不按幀計數的遊戲（D2R 的邏輯按自己的 25 Hz 走）。`DM_PRESENT_INTERVAL=game` / `display` 可覆蓋，也可寫在 `Documents/env.txt` |
 | `nvn_tex_base`、`nvn_tex_slots`、`nvn_samp_base`、`nvn_img_base`、`nvn_img_slots`、`nvn_ssbo_bases` | NVN 驅動常量段，按全庫著色器實測 |
 | `shader_groups`、`shader_note` | `shader_split.py` 的來源組與映射表表頭說明 |
 
@@ -45,8 +45,8 @@
 ## 加一個遊戲
 
 1. **粗查。** 對這個遊戲的 NSP 文件夾跑 `scripts/build_ipa_from_nsp.py`。沒有檔案時它只解出代碼模塊和 RomFS 清單，寫出 `<NSP 文件夾>/<標題號>_survey/survey.md`。報告包括模塊與構建號、SDK、引擎與圖形接口標記、RomFS 容器、改寫點統計、導入與宿主鈎子的對比。
-2. **檔案。** 把 `010015100B514000/game.tsv` 拷成 `dm/games/<標題號>/game.tsv`（目錄名用基礎版的標題號），填身份、`build` 行和 `modules`。內存與 NVN 的值先沿用馬力歐的，等起機時實測再改（[docs/agents](../../docs/agents/README.md)）。
-3. **著色器表。** 跑 `DM_GAME=<名> shader_split.py … dm/games/<名>/shader_map.tsv dm/games/<名>/shader_facts.tsv dm/games/<名>/shader_pairs.tsv`。再補空的 `shader_map.tsv.conflicts.tsv`、`bf_want.tsv` 和 `pso_manifest.tsv`（表頭照馬力歐的抄）。
+2. **檔案。** 把 `010051F0207B2000/game.tsv` 拷成 `dm/games/<標題號>/game.tsv`（目錄名用基礎版的標題號），填身份、`build` 行和 `modules`。內存與 NVN 的值先沿用拷來的，等起機時實測再改（[docs/agents](../../docs/agents/README.md)）。
+3. **著色器表。** 跑 `DM_GAME=<名> shader_split.py … dm/games/<名>/shader_map.tsv dm/games/<名>/shader_facts.tsv dm/games/<名>/shader_pairs.tsv`。再補空的 `shader_map.tsv.conflicts.tsv`、`bf_want.tsv` 和 `pso_manifest.tsv`（表頭照 `010051F0207B2000` 的抄）。
 4. **翻譯鏈。**
    1. `DM_GAME=<名> dmsh_chain.py --header`
    2. `DM_GAME=<名> [IOSOUT=…] dmsh_build.py <包目錄> <緩存目錄>`

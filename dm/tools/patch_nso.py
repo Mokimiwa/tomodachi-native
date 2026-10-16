@@ -50,23 +50,6 @@ PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
 # Networking cuts (excluded scope: Battle.net / online play): taken from a community offline fix (LFS Mod Offline Fix for v2228224, which differs from the official 94012 main in only these 7 words).
 # Measured: the system service layer (nifm offline / DNS black hole / account service) cannot get around it: the game itself sends Battle.net requests directly and allows offline play according to the "last online" time.
 CUTS = {
-  # Super Mario Bros. Wonder v0 main
-  'cd6e42aee7934f4d8393cd43893ae25e': [
-    # 資源堆留餘量：資源單元的 ExpHeap 按資源尺寸表值 + 0x1008 建（main+0x1e603c → ExpHeap::create main+0x4aac38），表值是任天堂實測的峰值，幾乎不留餘量
-    # （PlayerYoshiAnm 用到 99%）。宿主上開場關 Course900 的 Model/NpcCommonerA.bfres 差約 0x70 字節：模型資源初始化最後一塊顯存（MatBlock，
-    # 0x9000 字節、4 KB 對齊，main+0x4290c0）放下後，它的 0x598 字節描述塊放不下，顯存分配失敗 → 緩衝區建在空內存池上 → main+0x106f5c8 讀空崩潰。
-    # 與真機差在哪裡未查明（本塊之前的每一項分配尺寸都由遊戲代碼與數據決定）；先給每個資源堆 +16 KB。
-    # Resource heap slack: each resource unit's ExpHeap is created with the resource size table value + 0x1008 (main+0x1e603c → ExpHeap::create main+0x4aac38); the table holds Nintendo's measured peaks with almost no margin
-    # (PlayerYoshiAnm uses 99%). On the host, Model/NpcCommonerA.bfres in the opening course Course900 is about 0x70 bytes short: after the model resource's last GPU chunk (MatBlock,
-    # 0x9000 bytes, 4 KB aligned, main+0x4290c0) is placed, its 0x598-byte descriptor does not fit, the GPU allocation fails → a buffer is built on a null memory pool → null read crash at main+0x106f5c8.
-    # Where this differs from hardware is not known (every allocation size before this block is determined by game code and data); for now every resource heap gets +16 KB.
-    (0x1e62fc, 'e00317aa', 'e0124091', '資源堆尺寸：mov x0,x23 → add x0,x23,#0x4000（ExpHeap::create 的尺寸參數 +16 KB）'),
-  ],
-  # Super Mario Bros. Wonder 1.2.1（v327680）main：同上。位置由 dm/tools/nso_fnmap.py 從 v0 搬來（所在函數 0x1e603c → 0x1cf6f0 屏蔽地址後全同，ExpHeap::create 0x4aac38 → 0x4c4a18）
-  # Super Mario Bros. Wonder 1.2.1 (v327680) main: same as above. Location carried over from v0 by dm/tools/nso_fnmap.py (containing function 0x1e603c → 0x1cf6f0 identical after address masking, ExpHeap::create 0x4aac38 → 0x4c4a18)
-  'ff773e90972d544eb79406eaa65396d5': [
-    (0x1cf9b0, 'e00317aa', 'e0124091', '資源堆尺寸：mov x0,x23 → add x0,x23,#0x4000（ExpHeap::create 的尺寸參數 +16 KB）'),
-  ],
   'db0507f36b84200ac05f75d76ed5026f': [
     # （放進所有產物共用的基礎改寫）：遊戲顯存分配器預算 260 MB → 512 MB
     # (Placed in the base rewrite shared by all build outputs): game video memory allocator budget 260 MB → 512 MB
@@ -164,37 +147,6 @@ CUTS = {
     (0x5d8040, 'a005fe97', '411100d4', '玩家進局取出生點調用點 bl 0x5596c0 → svc #0x8a：宿主原樣代調，進局在城鎮時出生點換成小站旁（hle.h SVC_HOST_JOIN_SPAWN）', '僅宿主'),
     (0x5d8400, 'b004fe97', '611100d4', '進局給屍體取落點調用點 bl 0x5596c0 → svc #0x8b：同上，屍體與人取同一個點（hle.h SVC_HOST_JOIN_CORPSE）', '僅宿主'),
     (0x11f0914, '77100094', '811000d4', '段讀取 0x11f07d0 逐塊解碼 bl 0x11f4af0(ctx, 塊, 長度) → svc #0x84：同上（hle.h SVC_HOST_GRANNY_B）', '僅宿主'),
-  ],
-  # 火焰紋章 Engage 2.0.0（v327680）sdk：AddressRegionManager 節點區 0x3fe00000（約 1 GB）→ 0x3e00000（62 MB）。
-  # 構造函數（sdk+0x346420）在別名區開頭划出節點區（0x30 字節一個節點的單元堆，用到才映射），其後才給 AllocateAddressRegion 分區域。
-  # 真機別名區 64 GB，這 1 GB 無所謂；宿主別名區受 iOS 單塊預留 6 GB 所限只有 5.375 GB，StandardAllocator 一塊 3.14 GB（按 1 GB 對齊）之後
-  # Unity 的低層虛擬分配器（main+0x9aa0f4 → AllocateAddressRegion）只剩約 1.2 GB，序章戰鬥約 357 s 時分不到 → 返回 0 → main+0x9a4664 寫空崩潰。
-  # 62 MB 夠約 135 萬個節點（實測活著的區域幾百個）。兩條 mov 必須一起改：+0x346430 定節點區上限，+0x3464cc 把它登記成已佔區域。
-  # Fire Emblem Engage 2.0.0 (v327680) sdk: AddressRegionManager node area 0x3fe00000 (about 1 GB) → 0x3e00000 (62 MB).
-  # The constructor (sdk+0x346420) carves the node area out of the start of the alias region (a unit heap of 0x30-byte nodes, mapped only as used) before AllocateAddressRegion hands out regions.
-  # The hardware alias region is 64 GB, so the 1 GB does not matter there; the host's alias region is only 5.375 GB (iOS caps a single reservation at 6 GB), and after StandardAllocator's 3.14 GB block (1 GB aligned)
-  # Unity's low-level virtual allocator (main+0x9aa0f4 → AllocateAddressRegion) had only about 1.2 GB left; about 357 s into the prologue battle it got no region → returned 0 → null write crash at main+0x9a4664.
-  # 62 MB holds about 1.35 million nodes (a few hundred regions are live in measurements). Both movs must change together: +0x346430 sets the node area limit, +0x3464cc registers it as an occupied region.
-  # 火焰紋章 Engage 2.0.0 (v327680) main：按遊戲自己的 60 幀路徑跑（垂直同步計數恆為 1）。
-  # 遊戲的時間類 App.GameTime 按場景選垂直同步計數（Slow = 2，即 30 幀：系統、片頭、演示、戰鬥演出、據點；Normal 只在 GameConfig.IsPerformance 時為 1），
-  # 經 GameTime.SetVsyncCount(int) 交給 Unity（QualitySettings.vSyncCount → NVN 出圖間隔）。約 96 處逐幀邏輯（鏡頭、地圖光標、單位演員、菜單滾動與光標、據點鏡頭、小遊戲）
-  # 按 GameTime.VsyncFixedCount（= vSyncCount，每幀推進幾個 60 Hz 節拍）走：計數 2 而屏幕 60 幀時這些都快一倍，計數 1 時 60 幀剛好。
-  # 按真實時間走的 VsyncDeltaCount / VsyncDeltaTime（據點人物移動、釣魚、龍騎等約 120 處）與幀率無關。
-  # 剪在 Unity 的托管包裝 QualitySettings.set_vSyncCount（main+0x32f92c0）：兩條路徑都用 w19 當參數，mov w19,w0 → mov w19,#1，
-  # 所有調用者（GameTime、QualitySettingsStack.PopImpl、XRSystem）都只能設 1；讀值（get_vSyncCount）隨之為 1，遊戲自洽。沒有代碼調 SetQualityLevel。
-  # Fire Emblem Engage 2.0.0 (v327680) main: run the game's own 60 fps path (vertical sync count always 1).
-  # The game's time class App.GameTime picks a vertical sync count per scene (Slow = 2, i.e. 30 fps: system, movies, demos, combat cutscenes, the hub; Normal is 1 only when GameConfig.IsPerformance)
-  # and hands it to Unity through GameTime.SetVsyncCount(int) (QualitySettings.vSyncCount → NVN present interval). About 96 pieces of per-frame logic (cameras, map cursor, unit actors, menu scrolling and cursors, hub camera, minigames)
-  # step by GameTime.VsyncFixedCount (= vSyncCount, how many 60 Hz ticks each frame advances): with a count of 2 and 60 frames on screen they all run twice as fast, with a count of 1 at 60 fps they are right.
-  # The real-time VsyncDeltaCount / VsyncDeltaTime (hub character movement, fishing, dragon ride and so on, about 120 places) do not depend on the frame rate.
-  # The cut is in Unity's managed wrapper QualitySettings.set_vSyncCount (main+0x32f92c0): both paths use w19 as the argument, mov w19,w0 → mov w19,#1,
-  # so every caller (GameTime, QualitySettingsStack.PopImpl, XRSystem) can only set 1; the read side (get_vSyncCount) follows at 1 and the game stays consistent. No code calls SetQualityLevel.
-  '8c08b9719e085f91847b5e0f935d9488': [
-    (0x32f92d4, 'f303002a', '33008052', 'QualitySettings.set_vSyncCount 包裝：參數 mov w19,w0 → mov w19,#1（遊戲自己的 60 幀路徑）', '僅宿主'),
-  ],
-  '56ec24747ec9e7f19b3efb062483a19d': [
-    (0x346430, '08fca752', '087ca052', 'AddressRegionManager 構造：節點區上限 mov w8,#0x3fe00000 → mov w8,#0x3e00000', '僅宿主'),
-    (0x3464cc, '09fca752', '097ca052', 'AddressRegionManager 構造：節點區登記為已佔區域的長度 mov w9,#0x3fe00000 → mov w9,#0x3e00000', '僅宿主'),
   ],
   # 朋友收集 夢想生活 v0 main：點哪選哪（Mac 滑鼠點擊 = 觸屏）。界面的手柄 T（sead::Controller 子類，虛表 main+0x31f9308）每幀在 main+0x3f7600 選指針模式：
   # 1 自由指針、2 觸屏指針、3 焦點（小手在按鈕間跳）。它讀兩次 T+0x1c0（觸屏允許位，各場景經 main+0x1cfaf50 / 0x1cfaf80 設清）：非 0 時才看觸屏元件的 0 號手指

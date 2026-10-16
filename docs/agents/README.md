@@ -2,7 +2,7 @@
 
 These pages are for an agent asked to analyse a Switch NSP and port it with the native-execution approach of this repository and [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile): the game's own aarch64 code runs natively on Apple hardware, a rewriter patches only the instructions Apple's kernel cannot run, the host replaces Horizon system services, and NVN is reimplemented on Metal.
 
-Everything here was learned on two titles: Diablo II: Resurrected (SDK ~12, NVN 53, the original target of d2r-mobile) and Super Mario Bros. Wonder (SDK 16.2.0, NVN 55, this repository; its update 1.2.1 uses SDK 16.2.12). Where the two differed, both are given; a third title will differ again, so treat every number below as "measure it, don't assume it".
+Everything here was learned on two titles: Diablo II: Resurrected (SDK ~12, NVN 53, the original target of d2r-mobile) and Super Mario Bros. Wonder (SDK 16.2.0, NVN 55, the first target of nxnative, whose profile now lives upstream; its update 1.2.1 uses SDK 16.2.12). Where the two differed, both are given; a third title will differ again, so treat every number below as "measure it, don't assume it".
 
 | Page | Covers |
 |---|---|
@@ -29,7 +29,7 @@ Everything here was learned on two titles: Diablo II: Resurrected (SDK ~12, NVN 
 
    It extracts only the code modules plus a RomFS list.
 2. Extract base (and update, if in scope) — [01](01-extract.md). Finish the survey — [02](02-survey.md). Write down: SDK version, NVN API version, module list, imports the host lacks, SVCs, instruction census, NVN loader pattern, shader containers.
-3. Add a game profile `dm/games/<title ID>/game.tsv`, named after the base game's title ID (start from `010015100B514000/game.tsv`: identity, `build` rows, `modules`; keep the memory / NVN values until they are measured) and build the host for it with `make -C dm/host GAME=<id>`.
+3. Add a game profile `dm/games/<title ID>/game.tsv`, named after the base game's title ID (start from `010051F0207B2000/game.tsv`: identity, `build` rows, `modules`; keep the memory / NVN values until they are measured) and build the host for it with `make -C dm/host GAME=<id>`.
 4. Run the rewriter (`DM_RULESET=native`) and check its counts against `insn_census.py`.
 5. Boot on the Mac and iterate on the failure catalogue in [03](03-bringup.md) until the game reaches its frame loop.
 6. Extract and translate the shaders, find the binding layout by census, and get the first frame — [04](04-graphics.md).

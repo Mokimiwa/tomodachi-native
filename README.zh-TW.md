@@ -68,7 +68,7 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 
 **可以接手把嗎？** Mac 版目前還不支援手把，先用鍵盤、滑鼠和觸控板。
 
-**之後會支援其他遊戲嗎？** 程式裡還留著 nxnative 原本做的《超級瑪利歐兄弟 驚奇》和《聖火降魔錄 Engage》設定檔（見英文版的 [Game profiles](README.md#game-profiles)），不過這邊會先把《朋友收集》做好。
+**之後會支援其他遊戲嗎？** 這個版本只做《朋友收集》。想玩《超級瑪利歐兄弟 驚奇》或《聖火降魔錄 Engage》，請用原本的 [nxnative](https://github.com/seedds/smbw-mobile)。想自己移植別的遊戲，見英文版的 [Port another game](README.md#port-another-game)。
 
 ## 已知問題
 

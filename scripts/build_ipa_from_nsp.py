@@ -7,7 +7,7 @@
 # 只用三樣東西：本倉庫、放一個遊戲 NSP 的文件夾（基礎版 + 檔案 shader_versions 列的更新都要；有 DLC NSP 就一並打進去，解鎖遊戲裡已有的追加內容）、prod.keys。
 # 所有中間產物都在 NSP 文件夾裡的 <名>_build/：extract/（解出的遊戲文件，出包後默認刪掉）、aoc/（DLC 按序號解出的 RomFS）、tools/、patched_*/、shader/（著色器包與緩存，留著下次出包快）、logs/（每步的完整輸出）、tmp/、ipa/。出的 IPA 缺省也放在 NSP 文件夾裡。
 # 著色器翻譯器用倉內的 dm/gfx/tools/dmsh_xlate_bin（與 dmsh_chain.lock 指紋一致的那份；重編出的 dll 指紋不同，dmsh_build 會拒絕）。
-# 運行本文件的 Python 要有 lz4、capstone、fonttools；另需 Xcode、xcodegen、.NET SDK 10、zstd、spirv-cross。馬力歐首次約 35 分鐘（大頭是著色器庫），再跑約 10 分鐘（著色器庫走緩存）。密鑰值一律不打印。
+# 運行本文件的 Python 要有 lz4、capstone、fonttools；另需 Xcode、xcodegen、.NET SDK 10、zstd、spirv-cross。首次要幾十分鐘（大頭是著色器庫），再跑快很多（著色器庫走緩存）。密鑰值一律不打印。
 # Unsigned IPA straight from the NSPs: identify the game (title ID → game profile dm/games/<id>/) → extract (nx_extract) → rewrite the code modules (patch_nso.py) → split out the shaders and check them against the profile's tables (shader_split.py)
 #   → iOS shader libraries (dmsh_build.py) → build_ipa.sh. A game with no matching profile is only surveyed (<NSP folder>/<title ID>_survey/survey.md); no IPA.
 # Two ways to run it: open this file in Spyder and press F5 (it uses the values under "Settings" below; an empty NSP folder or prod.keys is asked for at run time);
@@ -16,14 +16,14 @@
 # Uses only three things: this repository, a folder holding one game's NSPs (the base game plus the updates listed in the profile's shader_versions are required; DLC NSPs, when present, are packed too and unlock the add-on content already in the game), and prod.keys.
 # Every intermediate file is under <id>_build/ in the NSP folder: extract/ (the extracted game files, deleted after the IPA is built by default), aoc/ (each DLC's RomFS by index), tools/, patched_*/, shader/ (shader package and caches, kept so the next build is fast), logs/ (each step's full output), tmp/, ipa/. The finished IPA also goes to the NSP folder by default.
 # The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it).
-# The Python running this file needs lz4, capstone and fonttools; also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. For Mario the first run takes about 35 minutes (mostly the shader libraries); later runs take about 10 (the shader libraries come from the cache). Key values are never printed.
+# The Python running this file needs lz4, capstone and fonttools; also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. The first run takes tens of minutes (mostly the shader libraries); later runs are much faster (the shader libraries come from the cache). Key values are never printed.
 import collections, ctypes, getpass, os, re, shutil, struct, subprocess, sys, threading, time, zlib
 from pathlib import Path
 
 # ---- 設置 | Settings ----
 NSP_DIR = ''                            # 放 NSP 的文件夾（留空 = 運行時問） | folder holding the NSPs (empty = ask at run time)
 PROD_KEYS = ''                          # prod.keys 的路徑（留空 = 運行時問） | path of prod.keys (empty = ask at run time)
-PACKAGE = ''                            # 打進 IPA 的版本（留空 = 遊戲檔案的 package；馬力歐 'v327680' 即 1.2.1，或 'v0'） | version packed into the IPA (empty = the profile's package; Mario 'v327680' i.e. 1.2.1, or 'v0')
+PACKAGE = ''                            # 打進 IPA 的版本（留空 = 遊戲檔案的 package；如 'v0' = 基礎版，'v327680' 之類 = 某個更新） | version packed into the IPA (empty = the profile's package; e.g. 'v0' = the base game, values like 'v327680' = an update)
 OUT_IPA = ''                            # 輸出的 IPA（留空 = NSP 文件夾裡的 <檔案的 ipa>） | output IPA (empty = <the profile's ipa> in the NSP folder)
 APP_NAME = ''                           # 主屏上的 App 名（留空 = 基礎版 NSP 裡的遊戲名） | app name on the home screen (empty = the game name in the base NSP)
 BUNDLE_ID = ''                          # App 的包名（留空 = org.nxnative.<基礎版標題號小寫>） | the app's bundle ID (empty = org.nxnative.<base game title ID in lowercase>)
@@ -349,7 +349,7 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g):
 
 
 def build_shaders(py, repo, sh, xlate, env, logs, g):
-    say('出 iOS 著色器庫（馬力歐首次約 30 分鐘，之後走緩存約 7 分鐘）| building the iOS shader libraries (Mario: about 30 minutes the first time, about 7 with the cache)')
+    say('出 iOS 著色器庫（首次要幾十分鐘，之後走緩存快很多）| building the iOS shader libraries (tens of minutes the first time, much faster with the cache)')
     ios = sh / 'ios'
     run([py, repo / 'dm/gfx/tools/dmsh_build.py', sh / 'pkg', sh / 'cache'], logs / 'dmsh_build.log', env=dict(env, XLATE=str(xlate), IOSOUT=str(ios)), quiet=True)
     chain = re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
@@ -372,7 +372,7 @@ def parse_args(argv):
     import argparse
     ap = argparse.ArgumentParser(prog='build_ipa_from_nsp.py',
         description='從 NSP 出未簽名 IPA；沒有遊戲檔案的遊戲只寫粗查報告 | Build an unsigned IPA from a game\'s NSPs; a game with no profile only gets a survey.',
-        epilog='例 | example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Super Mario Bros Wonder" -k ~/keys/prod.keys')
+        epilog='例 | example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Tomodachi Life" -k ~/keys/prod.keys')
     ap.add_argument('nsp_dir', nargs='?', help='放一個遊戲 NSP 的文件夾（缺省 = 設置 NSP_DIR，再沒有就問）| folder holding one game\'s NSPs (default: the NSP_DIR setting, else asked)')
     ap.add_argument('-k', '--keys', help='prod.keys 的路徑（缺省 = 設置 PROD_KEYS，再沒有就問）| path of prod.keys (default: the PROD_KEYS setting, else asked)')
     ap.add_argument('-p', '--package', help='打進 IPA 的版本，如 v327680 / v0（缺省 = 遊戲檔案的 package）| version packed into the IPA, e.g. v327680 / v0 (default: the profile\'s package)')

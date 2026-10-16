@@ -68,7 +68,7 @@ Details per part are in [How it works in detail](#how-it-works-in-detail).
 
 **Can I use a controller?** Not on the Mac yet: keyboard, mouse and trackpad for now.
 
-**Will other games come?** The code still carries nxnative's profiles for Super Mario Bros. Wonder and Fire Emblem Engage (see [Game profiles](#game-profiles)); this fork works on Tomodachi Life first.
+**Will other games come?** This fork covers Tomodachi Life only. Super Mario Bros. Wonder and Fire Emblem Engage run with [nxnative](https://github.com/seedds/smbw-mobile), the project this fork continues. To bring up another game, see [Port another game](#port-another-game).
 
 ## Known issues
 
@@ -79,13 +79,13 @@ Details per part are in [How it works in detail](#how-it-works-in-detail).
 
 | Game | Profile | NSPs the folder needs | State |
 |---|---|---|---|
-| Super Mario Bros. Wonder | `010015100B514000` | the base game (1.0.0) and update 1.2.1 | **Playable on the iPhone with sound.** An 11-minute session through several levels ran at 60 fps with no crash. The IPA packs 1.2.1 (`-p v0` packs 1.0.0) and is about 3.9 GB |
 | Tomodachi Life: Living the Dream | `010051F0207B2000` | the base game (1.0.0) | **Playable on the Mac with sound.** The island tour, island name and Mii creation work; see [Known issues](#known-issues). Not packaged for iOS yet |
-| Fire Emblem Engage | `0100A6301214E000` | the base game and update 2.0.0; DLC NSPs (Expansion Pass) are packed too when present | **In bring-up.** On the Mac it plays the prologue, battles included. The first iPhone run (2026-10-15) went through a new game's opening movie and name entry at 60 fps with no crash. After a trip to the background, one of the game's two audio outputs stopped being fed; this is being investigated. It runs at 60 fps at the right speed: the Switch version runs at 30, and one patch to its code switches it to the 60 fps timing the game already has, so nothing runs too fast. The IPA is about 15 GB |
 
 For any other game, the script writes a survey instead of an IPA (see [Port another game](#port-another-game)).
 
 ## Pack an IPA
+
+Tomodachi Life has not been run on iOS yet. To play Super Mario Bros. Wonder or Fire Emblem Engage on an iPhone or iPad, use [nxnative](https://github.com/seedds/smbw-mobile).
 
 You need:
 - a Mac with Xcode, XcodeGen, the .NET SDK 10, zstd and spirv-cross;
@@ -96,31 +96,24 @@ You need:
 Free disk space: about the size of the NSPs plus 6 GB, and room for the IPA.
 
 ```
-~/Games/MarioWonder/
-  Super Mario Bros. Wonder [010015100B514000][v0].nsp
-  Super Mario Bros. Wonder [010015100B514800][v327680].nsp
+~/Games/Tomodachi/
+  Tomodachi Life Living the Dream [010051F0207B2000][v0].nsp
 ```
 
 From a terminal (`-h` lists every option):
 
 ```
-# Super Mario Bros. Wonder → ~/Games/MarioWonder/SMBWMobile.ipa
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
+# Tomodachi Life → ~/Games/Tomodachi/TomodachiLife.ipa
+python3 scripts/build_ipa_from_nsp.py ~/Games/Tomodachi -k ~/keys/prod.keys
 
 # the same, written to the Desktop with your own home-screen name
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys -o ~/Desktop/Mario.ipa --app-name "Mario Wonder"
-
-# pack Mario 1.0.0 instead of 1.2.1 (the folder still needs both NSPs: the shader tables cover both versions)
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys -p v0
-
-# Fire Emblem Engage → ~/Games/FEEngage/FEEngage.ipa
-python3 scripts/build_ipa_from_nsp.py ~/Games/FEEngage -k ~/keys/prod.keys
+python3 scripts/build_ipa_from_nsp.py ~/Games/Tomodachi -k ~/keys/prod.keys -o ~/Desktop/Tomodachi.ipa --app-name "Tomodachi"
 
 # keep the extracted game files (to run the game on the Mac, or to skip extraction next time)
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --keep-extracted
+python3 scripts/build_ipa_from_nsp.py ~/Games/Tomodachi -k ~/keys/prod.keys --keep-extracted
 
 # a diagnostic build with environment switches baked in (one KEY=VALUE per line)
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --env-file diag_env.txt
+python3 scripts/build_ipa_from_nsp.py ~/Games/Tomodachi -k ~/keys/prod.keys --env-file diag_env.txt
 ```
 
 In Spyder, open `scripts/build_ipa_from_nsp.py`, fill in the settings at the top (`NSP_DIR`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`), and press F5. Empty paths are asked for at run time.
@@ -133,7 +126,7 @@ What the script does:
 5. It builds the iOS shader libraries.
 6. It calls `build_ipa.sh`.
 
-Everything it writes stays in the NSP folder: intermediate files and logs in `<id>_build/`, the IPA next to the NSPs. The extracted game files are deleted at the end unless you pass `--keep-extracted`. It exits with 0 when done and 1 on an error. For Mario, the first run takes about 35 minutes, mostly the shader libraries; a second run takes about 10.
+Everything it writes stays in the NSP folder: intermediate files and logs in `<id>_build/`, the IPA next to the NSPs. The extracted game files are deleted at the end unless you pass `--keep-extracted`. It exits with 0 when done and 1 on an error. The first run takes tens of minutes, mostly for the shader libraries; later runs reuse them from the cache.
 
 ## Mac app
 
@@ -156,7 +149,7 @@ In the app:
 
 ## Install and play
 
-Sign and install the IPA with your own tool (AltStore, Sideloadly, LiveContainer, ...). The app takes its name and icon from the base game NSP, and its bundle ID is `org.nxnative.<base game title ID>` (for example `org.nxnative.0100a6301214e000`); `APP_NAME` / `BUNDLE_ID` in the script override them. Your signing tool may replace the bundle ID.
+Sign and install the IPA with your own tool (AltStore, Sideloadly, LiveContainer, ...). The app takes its name and icon from the base game NSP, and its bundle ID is `org.nxnative.<base game title ID>` (for example `org.nxnative.010051f0207b2000`); `APP_NAME` / `BUNDLE_ID` in the script override them. Your signing tool may replace the bundle ID.
 
 - **Controls:** a translucent touch gamepad over the picture:
   - ZL above L in the top-left corner, ZR above R in the top-right;
@@ -174,13 +167,13 @@ The first time each new scene appears, it can stutter while Metal compiles its p
 
 | Part | State |
 |---|---|
-| Rewriter (`dm/tools/patch_nso.py`, `DM_RULESET=native`) | Runs unchanged on every module of both games. Per-build cuts are keyed by the module's build ID. Optional cuts (`OPTIONS`, such as Tomodachi Life's 60 FPS) are checked at packing time but only listed in `<module>.options.tsv`; the Mac host applies the ones named in `DM_OPTIONS` before sealing the code |
+| Rewriter (`dm/tools/patch_nso.py`, `DM_RULESET=native`) | Runs unchanged on every code module. Per-build cuts are keyed by the module's build ID. Optional cuts (`OPTIONS`, such as Tomodachi Life's 60 FPS) are checked at packing time but only listed in `<module>.options.tsv`; the Mac host applies the ones named in `DM_OPTIONS` before sealing the code |
 | Host (`dm/host`) | Stands in for the Horizon kernel and the system services the games call: threads and synchronization, memory, file system with transactional saves, HID, audio, movies (VP9 through libvpx), software keyboard, focus and lifecycle |
-| Graphics (`dm/gfx`) | NVN on Metal 4. Shaders are extracted by `shader_split.py` from Nintendo's containers and from Unity's `Shader` objects, then translated offline. Mario: 16,266 of 16,268 shaders compile. Engage: 9,268 of 9,269. Tomodachi Life: 14,381 of 14,388 |
-| Audio | Games that carry the SDK's audio renderer (Mario, Tomodachi Life) run it in-process; games that use AudioOut directly (Engage: Wwise) feed it straight. Output goes through Core Audio (default on iOS, `DM_AUDIO=1` on the Mac) |
+| Graphics (`dm/gfx`) | NVN on Metal 4. Shaders are extracted by `shader_split.py` from Nintendo's containers and from Unity's `Shader` objects, then translated offline. Tomodachi Life: 14,381 of 14,388 shaders compile |
+| Audio | Games that carry the SDK's audio renderer, such as Tomodachi Life, run it in-process; games that use AudioOut directly feed it straight. Output goes through Core Audio (default on iOS, `DM_AUDIO=1` on the Mac) |
 | Input | Every source ends up as one virtual Switch controller (buttons, both sticks, touch points); `dm/host/dm_bind.h` maps sources to it from a text table. iOS: the touch gamepad and physical controllers. Mac: `DM_WINDOW=1` for a window with keyboard, mouse and trackpad input (remap with `DM_KEYMAP=<file>`, default `$DM_ROOT/keymap.txt`; mapping `mouse:Left` to `Pointer` makes the mouse the touchscreen), or scripted input (`DM_KEYS=<seconds>:<control>,…` with buttons, stick directions such as `StickLUp~2` and `Touch=x/y`, and `DM_KBD=<text>` answering the system keyboard) |
 | iOS app | One unsigned IPA for iPhone and iPad. The rewritten code is embedded in the executable; the shader libraries, the RomFS and the game icon are inside the app |
-| Known gaps | Sparse virtual-pool mappings; `DrawElementsIndirect`. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. The bundled prewarm lists are empty. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
+| Known gaps | Sparse virtual-pool mappings; `DrawElementsIndirect`. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. The bundled prewarm list is empty |
 
 ## Port another game
 
@@ -204,7 +197,7 @@ You need the same tools as the script. The shader translator is the prebuilt `dm
 - `VER`, a version folder named after the NSP version.
 
 ```
-G=010015100B514000; W=~/$G-work; VER=v327680
+G=010051F0207B2000; W=~/$G-work; VER=v0
 # 1. extract: the base game alone (update -), or an update layered over it (the last argument lets unchanged files become clones)
 dotnet build dm/tools/nx_extract -c Release -o $W/build/nx_extract
 $W/build/nx_extract/nx_extract <prod.keys> <base NSP> - $W/data/v0
@@ -212,7 +205,7 @@ $W/build/nx_extract/nx_extract <prod.keys> <base NSP> <update NSP> $W/data/$VER 
 # 2. rewrite the profile's code modules
 for m in $(python3 dm/games/game.py $G modules); do DM_RULESET=native python3 dm/tools/patch_nso.py $W/data/$VER/ExeFS/$m $W/build/patched_$VER $m; done
 # 3. shaders: extract from every version in the profile's shader_versions (comma-separated, base first), then translate into <cache>/b-<chain version>/
-DM_GAME=$G python3 dm/gfx/tools/shader_split.py $W/data/v0/RomFS,$W/data/$VER/RomFS $W/data/v0/ExeFS/main,$W/data/$VER/ExeFS/main $W/shader/pkg dm/games/$G/shader_map.tsv dm/games/$G/shader_facts.tsv dm/games/$G/shader_pairs.tsv
+DM_GAME=$G python3 dm/gfx/tools/shader_split.py $W/data/v0/RomFS $W/data/v0/ExeFS/main $W/shader/pkg dm/games/$G/shader_map.tsv dm/games/$G/shader_facts.tsv dm/games/$G/shader_pairs.tsv
 DM_GAME=$G python3 dm/gfx/tools/dmsh_chain.py --header
 DM_GAME=$G python3 dm/gfx/tools/dmsh_build.py $W/shader/pkg $W/build/cache/metal_shader_cache
 python3 dm/gfx/tools/c1_guard.py $W/build/cache/metal_shader_cache/b-<chain version> dm/games/$G/c1_full.tsv
@@ -221,7 +214,7 @@ make -C dm/host GAME=$G dmhost
 python3 dm/tools/make_ext_font.py $W/build/font/nintendo_ext.ttf
 # 5. run on the Mac
 DM_ROOT=$W DM_ROMFS=$W/data/$VER/RomFS DM_SAVE=$W/run/save DM_TEMP=$W/run/temp DM_MSL_DIR=$W/build/cache/metal_shader_cache DM_FONT_DIR=$W/build/font dm/host/dmhost $W/build/patched_$VER
-# 6. iOS shader libraries (about 15 min for Mario), then the IPA (default ~/Desktop/<the profile's ipa>)
+# 6. iOS shader libraries, then the IPA (default ~/Desktop/<the profile's ipa>)
 IOSOUT=$W/build/ios/dmsh_b DM_GAME=$G python3 dm/gfx/tools/dmsh_build.py $W/shader/pkg $W/build/cache/metal_shader_cache
 GAME=$G dm/ios/tools/build_ipa.sh [out.ipa]
 ```
@@ -242,7 +235,7 @@ Metal compiles each combination of shaders and pipeline settings for the GPU the
 - `dm/games/<id>/pso_manifest.tsv` is the seed list bundled with the app, prewarmed before `pso_user.tsv`.
 
 The lines name shaders by content key and hold no compiled code and nothing personal, so a list recorded on one device works on any other. To seed the bundled list:
-1. Record on the Mac with prewarm off, so everything is built on demand: `DM_PSO_MANIFEST=off DM_PSO_RECORD=<file>`, playing the scenes players reach first. Engage's list covers boot, the opening movie, the title, a save load and the prologue battle.
+1. Record on the Mac with prewarm off, so everything is built on demand: `DM_PSO_MANIFEST=off DM_PSO_RECORD=<file>`, playing the scenes players reach first.
 2. Append the recorded lines below the header comments, in the recorded order. Duplicates are dropped at load.
 3. Rebuild the IPA.
 
@@ -250,17 +243,11 @@ Record on the game version you ship. At launch the log names each list it read a
 
 ## Game notes
 
-**Super Mario Bros. Wonder (`010015100B514000`)**
-- **Versions:** v0 (1.0.0) and 1.2.1 (v327680). With the update layered over v0, unchanged files become APFS clones, so the merged RomFS adds only about 114 MB to the 3.5 GB base.
-- **Shaders:** 12,811 in v0 and 16,268 across both versions; the tables hold both.
-- **1.2.1:** it is a new `main` build (SDK 16.2.12), whose resource-heap cut (+16 KB slack) was carried over with `dm/tools/nso_fnmap.py`. It also makes new SDK calls, which the host answers: `nn::nfp` finds no amiibo, `pl::IsRunningOnOunce` is false, the shop call is a no-op, and `account::PopOpenUsers` returns none.
-- **Mac input:** `DM_KEYS="12:A,14:A,20:A,26:A,32:A"` reaches the opening course.
-
-**Fire Emblem Engage (`0100A6301214E000`)**
-- **Engine:** Unity 2020.3 IL2CPP, SDK 12.3.7. The shaders are read out of Unity bundles (`unityfs.py`).
-- **Memory:** a 5 GB guest block, the total proven on a phone, with a 2.5 GB application pool. A per-build cut shrinks the SDK's address-region node area to 62 MB.
-- **Audio:** Wwise drives AudioOut directly.
-- **Movies:** VP9, decoded on the host.
+**Tomodachi Life: Living the Dream (`010051F0207B2000`)**
+- **Version:** 1.0.0 (v0), built with SDK 20.
+- **Shaders:** 14,388 in the tables, of which 14,381 compile.
+- **Touch:** the game takes touch only in some scenes, such as Mii editing. Two per-build cuts make every scene take the touch pointer, so a mouse click taps the screen.
+- **60 FPS:** the optional cut `fps60` sets the game's present interval to 1. The game then halves its time step, so it runs at its normal speed. The address comes from Fl4sh9174's mod.
 
 ## Tools (`dm/tools`)
 
