@@ -71,7 +71,6 @@ Details per part are in [How it works in detail](#how-it-works-in-detail).
 
 ## Known issues
 
-- After typing a name, green rectangles cover the island-name page in docked mode.
 - The game does not react to touch yet, so the mouse steers the hand the way a stick does.
 
 ## Game profiles
@@ -277,7 +276,7 @@ This project is built on other people's work:
 
 - **[nxnative](https://github.com/seedds/smbw-mobile)** (MIT) by seedds: this repository continues it, with Tomodachi Life and the Mac app added.
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative (first called smbw-mobile) started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
-- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, unmodified in `dm/third_party/ryujinx`) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
+- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2 in `dm/third_party/ryujinx`, with one change: the FMZ multiply mode (`Instructions/InstEmitFloatArithmetic.cs`, where a zero factor makes the product 0 as on Maxwell)) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
 - **yuzu**: Maxwell instruction encodings for the shader reference tool, and a cross-check for kernel behaviour.
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`. **hactool** did the first extractions.

@@ -2033,6 +2033,16 @@ static void bv_flush(void) {
     int n = g_bv_npend; g_bv_npend = 0;
     for (int k = 0; k < n; k++) bv_copy(g_bv_pend[k], 0);
 }
+// 附件回授（同一通道裡取樣自己的顏色附件）：Switch 靠紋理屏障，每個像素讀自己那一點是合法的；Metal 同一渲染通道裡讀寫同一張貼圖是未定義行為，
+// 分塊 GPU 會讀到別塊正在寫回的資料（朋友收集的全屏後製讀 HDR 畫面又寫回它：128 行邊界上冒出 NaN，打完名字跳出的確認框把畫面模糊後疊回，NaN 擴散成綠色方塊、從此留在畫布上）。
+// 做法：開通道前把被取樣的附件整張拷到一張重用的副本（fbx_prepare），本通道裡取樣這張附件的綁定改讀副本（fbx_bind），通道結束即失效
+// Attachment feedback (sampling one's own colour attachment in the same pass): on the Switch a texture barrier makes it legal for each pixel to read its own spot; in Metal reading and writing the same texture in one render pass is undefined,
+// and a tiled GPU reads data other tiles are still storing (Tomodachi Life's full-screen post-process reads the HDR picture and writes it back: NaN appears on 128-row boundaries, the confirmation box after typing a name blurs the picture and blends it back, and the NaN spreads into green blocks that stay on the canvas).
+// Fix: before the pass, copy the sampled attachment into a reused copy (fbx_prepare); bindings in this pass that sample that attachment read the copy instead (fbx_bind); it lapses when the pass ends
+enum { FBX_MAX = 4 };
+static __strong id<MTLTexture> g_fbx_pool[FBX_MAX]; static uint64_t g_fbx_use[FBX_MAX], g_fbx_tick;
+static __strong id<MTLTexture> g_fbx_copy[FBX_MAX]; static uint64_t g_fbx_ser[FBX_MAX]; static int g_fbx_n;
+static NSMutableDictionary<NSNumber *, id<MTLTexture>> *g_fbx_views; static uint64_t g_fbx_count;   // g_fbx_count：累計拷了幾次 | g_fbx_count: copies made so far
 static void rp_end(void) { if (g_enc) { AP_B;
     ghost_flush();
     if (enc_label_on()) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // 幀內序號：同一趟每幀同名，表裡才能按名歸並 | Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
@@ -2040,7 +2050,7 @@ static void rp_end(void) { if (g_enc) { AP_B;
 #ifdef NVN_RT_RANGE_TEST
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
-    sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); if (g_lp.count) lp_finish(); fz_end();
+    sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; if (g_fbx_n) { g_fbx_n = 0; [g_fbx_views removeAllObjects]; } g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); if (g_lp.count) lp_finish(); fz_end();
 #ifdef NVN_RT_RANGE_TEST
     rr_finish(ranged);
 #endif
@@ -2117,6 +2127,11 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         any = 1;
         pd.colorAttachments[i].loadAction = R.clear_c[i] ? MTLLoadActionClear : MTLLoadActionLoad;
         pd.colorAttachments[i].clearColor = R.cc[i];
+        // 診斷 DM_NVN_CLEAR_RT=寬x高：這個尺寸的顏色附件一律清成黑色再畫（看畫面上的東西是當幀畫的，還是前幾幀留下來的）
+        // Diagnostic DM_NVN_CLEAR_RT=WxH: colour attachments of this size are always cleared to black before drawing (tells what is drawn this frame from what was left by earlier frames)
+        { static int cw = -1, ch; if (cw < 0) { const char *e = getenv("DM_NVN_CLEAR_RT"); if (!e || sscanf(e, "%dx%d", &cw, &ch) != 2) cw = 0; else MLOG("DM_NVN_CLEAR_RT：%dx%d 的顏色附件一律先清黑（診斷）", cw, ch); }
+          id<MTLTexture> ct = pd.colorAttachments[i].texture;
+          if (cw && (int)ct.width == cw && (int)ct.height == ch) { pd.colorAttachments[i].loadAction = MTLLoadActionClear; pd.colorAttachments[i].clearColor = MTLClearColorMake(0, 0, 0, 1); } }
         int cov = tbdr_on() && !R.clear_c[i] && (g_fd_dw || g_fd_di) && fz_load_covers(i, pd.colorAttachments[i].texture, pd.colorAttachments[i].level);
         if (!R.clear_c[i] && (g_fd_dw || g_fd_di) && !cov) PD("Q %llu c%d 讀入不可省 why=%d", g_stat_pass + 1, i, g_fd_why);
         if (cov) {
@@ -2729,6 +2744,24 @@ static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void
     if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && g_treg[tid].view_dirty == nvn_dirty_now()) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
     id<MTLTexture> t = tex_by_id(tid); if (out) *out = (__bridge void *)t; return t ? t.gpuResourceID._impl : 0;
 }
+// 綁定改讀副本：按原綁定的格式 / 類型 / 級 / 層 / 通道重排建同樣的視圖（每通道每貼圖號建一次）；調用方持 g_rmu
+// Bindings read the copy: build the same view as the original binding's format / type / levels / slices / swizzle (once per pass per texture ID); the caller holds g_rmu
+static id<MTLTexture> fbx_bind(int tid, id<MTLTexture> t) {
+    uint64_t ser = g_treg[tid].t.serial;
+    for (int i = 0; i < g_fbx_n; i++) {
+        if (g_fbx_ser[i] != ser) continue;
+        NSNumber *key = @(tid); id<MTLTexture> v = g_fbx_views[key]; if (v) return v;
+        id<MTLTexture> c = g_fbx_copy[i];
+        if (t.parentTexture || t.pixelFormat != c.pixelFormat || t.textureType != c.textureType)
+            v = [c newTextureViewWithPixelFormat:t.pixelFormat textureType:t.textureType levels:NSMakeRange(t.parentTexture ? t.parentRelativeLevel : 0, t.mipmapLevelCount)
+                                          slices:NSMakeRange(0, 1) swizzle:t.swizzle];
+        else v = c;
+        if (!v) return nil;
+        if (!g_fbx_views) g_fbx_views = [NSMutableDictionary dictionary];
+        g_fbx_views[key] = v; return v;
+    }
+    return nil;
+}
 static MTLSamplerAddressMode wrapm(int w) {
     switch (w) { case 0: case 7: return MTLSamplerAddressModeClampToEdge; case 1: return MTLSamplerAddressModeRepeat;
         case 3: case 2: return MTLSamplerAddressModeMirrorClampToEdge; case 5: case 4: return MTLSamplerAddressModeClampToBorderColor;
@@ -3313,6 +3346,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_handle(nvn_stage, reg, b->off + 8 * e) & 0xfffff) : reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = tex_type_fix(tid, &t, (MTLTextureType)b->dtt); if (r2) trid = r2; }
+            if (t && g_fbx_n && tid < g_ntreg) { id<MTLTexture> fv = fbx_bind(tid, t); if (fv) { t = fv; trid = fv.gpuResourceID._impl; } }   // 讀自己的附件：改讀開通道前的副本 | reading one's own attachment: read the copy made before the pass
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial);
             if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu", g_stat_pass, nvn_stage, reg, tid, t ? "實" : "啞", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
@@ -4850,6 +4884,56 @@ static void ghost_flush(void) {   // 渲染通道結束前：把認到的圖標�
     memcpy(&S, &save, sizeof S); args_dirty_all(); R.sc = sc; R.has_sc = has_sc; g_pso_dirty = g_dss_dirty = 1; g_gh.busy = 0;
     for (int i = 0; i < g_gh.n; i++) free(g_gh.c[i].S_); g_gh.n = 0;
 }
+// 這次繪製取樣了哪些顏色附件（位 k = 附件 k）：比貼圖序號，且取樣的級範圍要含附件那一級（寫第 k 級、讀第 k−1 級的降採樣鏈不算）
+// Which colour attachments this draw samples (bit k = attachment k): compare texture serials, and the sampled level range must include the attachment's level (downsample chains writing level k and reading level k-1 do not count)
+static unsigned fbx_hazard(NvProg *pr) {
+    unsigned mask = 0; if (!pr) return 0;
+    for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i];
+            if (b->kind != NVN_RB_TEX || b->reg >= 128 || sh->stage >= 6) continue;
+            int tid = (int)(S.tex[sh->stage][b->reg] & 0xfffff); if (!tid) continue;
+            pthread_mutex_lock(&g_rmu);
+            uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; view_t v = tid < g_ntreg && g_treg[tid].has_v ? g_treg[tid].v : (view_t){0};
+            pthread_mutex_unlock(&g_rmu);
+            for (int k = 0; ser && k < R.rt.n && k < 8; k++) {
+                if (!R.rt.color[k] || R.rt.color[k]->serial != ser) continue;
+                unsigned alv = R.rt.has_cview[k] && R.rt.cview[k].set_levels ? R.rt.cview[k].base_level : 0;
+                if (v.set_levels && (alv < v.base_level || alv >= (unsigned)v.base_level + (v.nlevels ? v.nlevels : 1))) continue;
+                mask |= 1u << k;
+            } } }
+    return mask;
+}
+static int fbx_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_FBX"); on = !(e && !strcmp(e, "0")); if (!on) MLOG("DM_NVN_FBX=0：附件回授不拷副本（對照用）"); } return on; }   // DM_NVN_FBX=0 關（A/B 對照） | DM_NVN_FBX=0 turns it off (A/B comparison)
+static void fbx_prepare(NvProg *pr) {
+    if (!fbx_on()) return;
+    unsigned mask = fbx_hazard(pr);
+    for (int k = 0; mask && k < R.rt.n && k < 8 && g_fbx_n < FBX_MAX; k++) {
+        if (!(mask >> k & 1)) continue;
+        id<MTLTexture> a = tex_mtl(R.rt.color[k]);
+        if (!a || a.textureType != MTLTextureType2D || a.sampleCount != 1 || bc_block_bytes(a.pixelFormat)) continue;
+        int hit = -1, lru = 0;
+        for (int i = 0; i < FBX_MAX; i++) {
+            int busy = 0; for (int j = 0; j < g_fbx_n; j++) busy |= g_fbx_copy[j] == g_fbx_pool[i];
+            id<MTLTexture> c = g_fbx_pool[i];
+            if (c && !busy && c.pixelFormat == a.pixelFormat && c.width == a.width && c.height == a.height && c.mipmapLevelCount == a.mipmapLevelCount) { hit = i; break; }
+            if (!busy && g_fbx_use[i] < g_fbx_use[lru]) lru = i;
+        }
+        if (hit < 0) {
+            MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:a.pixelFormat width:a.width height:a.height mipmapped:a.mipmapLevelCount > 1];
+            d.mipmapLevelCount = a.mipmapLevelCount; d.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView; d.storageMode = MTLStorageModePrivate;
+            id<MTLTexture> c = [g_dev newTextureWithDescriptor:d]; if (!c) continue;
+            if (g_fbx_pool[lru]) defer_obj_release(g_fbx_pool[lru]);
+            res_add(c); g_fbx_pool[lru] = c; hit = lru;
+            static int logged; if (logged++ < 4) MLOG("附件回授：%lux%lu 格式 %lu 的附件在同一通道被取樣，開通道前拷一份給取樣用", (unsigned long)a.width, (unsigned long)a.height, (unsigned long)a.pixelFormat);
+        }
+        g_fbx_use[hit] = ++g_fbx_tick;
+        id e = blit();
+        for (NSUInteger lv = 0; lv < a.mipmapLevelCount; lv++)
+            enc_b_copy_texture(e, a, 0, lv, MTLOriginMake(0, 0, 0), MTLSizeMake(MAX(a.width >> lv, 1u), MAX(a.height >> lv, 1u), 1), g_fbx_pool[hit], 0, lv, MTLOriginMake(0, 0, 0));
+        g_fbx_copy[g_fbx_n] = g_fbx_pool[hit]; g_fbx_ser[g_fbx_n] = R.rt.color[k]->serial; g_fbx_n++;
+        g_fbx_count++;
+    }
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "繪製前沒有綁定程序"); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
@@ -4959,7 +5043,8 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
 frz_plain:;
     int need = g_enc || !tbdr_on() ? 3 : pass_ds_need(), mode = defer_q_draw ? 0 : need == 0 ? 2 : need == 2 ? 3 : need == 1 ? 4 : 0;   // 2 都不掛 3 只掛模板 4 只掛深度 | 2 attach neither, 3 attach stencil only, 4 attach depth only
     int skip_d = mode != 0;
-    if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
+    if (g_enc && !g_fbx_n && fbx_on() && fbx_hazard(pr)) rp_end();   // 通道中途要讀自己的附件：先結束通道，下面重開時拷副本 | a draw mid-pass reads its own attachment: end the pass first, the copy is made when it reopens below
+    if (!g_enc) { g_fd_dw = dw; g_fd_di = di; fbx_prepare(pr); }
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) return;
