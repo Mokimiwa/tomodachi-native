@@ -40,7 +40,13 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
 CAS = os.environ.get('DMSH_CAS', os.path.join(cache_root, 'cas'))
 CAS_LOCKS, CAS_LOCKS_GUARD = {}, threading.Lock()
 PRE_STATS = collections.Counter()
-MAC_RECORD = 'xcrun -sdk macosx metal -c; xcrun -sdk macosx metallib'
+# macOS 編譯口徑與 iOS（ios_metal.py）同用 -fmetal-math-mode=relaxed：缺省 fast 讓後端把翻譯出的 isnan 選擇與 Inf / NaN 當成不存在。
+# M4 Pro 上朋友收集的天空散射表著色器（c4f4389f）在 fast 下中午天空紅色通道整片算成 0，CPU 照同一份 MSL 算是 0.6；relaxed 與 safe 都對
+# The macOS compile convention uses -fmetal-math-mode=relaxed, the same as iOS (ios_metal.py): the default fast mode lets the backend treat the translated isnan selects and Inf / NaN as nonexistent.
+# On an M4 Pro, Tomodachi Life's sky scattering shader (c4f4389f) computed the noon sky's red channel as 0 everywhere under fast, while the CPU gets 0.6 from the same MSL; relaxed and safe are both correct
+MAC_METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-fmetal-math-mode=relaxed']
+MAC_METALLIB = ['xcrun', '-sdk', 'macosx', 'metallib']
+MAC_RECORD = ' '.join(MAC_METAL) + '; ' + ' '.join(MAC_METALLIB)
 # 貼圖句柄表（貼圖指令立即數句柄所在的驅動段）：馬力歐（NVN 55）是 0x20 + 8 r、32 槽——全庫 4888 個著色器的立即數句柄恰是 0x20..0xF0、步長 8（D2R 的舊驅動是 0x168）。
 #   本作只用合併句柄（nvnCommandBufferBindTexture），沒有分離採樣器；圖像句柄表仍在 0x120 + 8 r（8 槽，緊接貼圖表之後；agl 的 10 個計算著色器實測 0x120 / 0x128 / 0x130，與 D2R 同址）。
 # Texture handle table (the driver segment holding texture instructions' immediate handles): Mario (NVN 55) uses 0x20 + 8 r, 32 slots - the immediate handles of all 4888 shaders are exactly 0x20..0xF0 in steps of 8 (D2R's older driver used 0x168).
@@ -211,9 +217,9 @@ def fetch_finish(key, src, refl):
                 open(fmsl, 'w').write(fv)
                 fair = fmsl[:-6] + '.air'; flib = os.path.join(out, key + '_bf.metallib')
                 try:
-                    subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', fmsl, '-o', fair], check=True)
+                    subprocess.run(MAC_METAL + [fmsl, '-o', fair], check=True)
                     tmp_flib = flib + '.tmp-' + str(os.getpid())
-                    subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', fair, '-o', tmp_flib], check=True)
+                    subprocess.run(MAC_METALLIB + [fair, '-o', tmp_flib], check=True)
                     os.replace(tmp_flib, flib)
                     ilib = None
                     if IOSOUT:
@@ -501,9 +507,9 @@ def finish(key, w, j, c1):
         if pad: open(msl, 'w').write(src)
     res = json.load(open(os.path.join(w, key + '.res.json')))
     try:
-        subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', msl, '-o', air], check=True)
+        subprocess.run(MAC_METAL + [msl, '-o', air], check=True)
         tmp_lib = lib + '.tmp-' + str(os.getpid())
-        subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', tmp_lib], check=True)
+        subprocess.run(MAC_METALLIB + [air, '-o', tmp_lib], check=True)
         os.replace(tmp_lib, lib)
     except subprocess.CalledProcessError as e:
         return 'metal 失敗', str(e)[:160], None

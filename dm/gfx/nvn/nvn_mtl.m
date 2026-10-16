@@ -2506,7 +2506,8 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
     if (len < 4 || memcmp(m, "MTLB", 4)) { NSString *src = [[NSString alloc] initWithBytes:m length:len encoding:NSUTF8StringEncoding]; munmap(m, len);
         if (!src) { if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:EILSEQ userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"既不是編好的庫也不是源碼 %@", path]}]; return nil; }
         static _Atomic int n; static _Atomic long long us; CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
-        id<MTLLibrary> l = [g_dev newLibraryWithSource:src options:nil error:err]; long long dt = (long long)((CFAbsoluteTimeGetCurrent() - t0) * 1e6);
+        static MTLCompileOptions *opt; static dispatch_once_t once; dispatch_once(&once, ^{ opt = [MTLCompileOptions new]; opt.mathMode = MTLMathModeRelaxed; });   // 同出包口徑（dmsh_build.py / ios_metal.py）：不許假設沒有 NaN / Inf | same convention as the offline build (dmsh_build.py / ios_metal.py): NaN / Inf may not be assumed away
+        id<MTLLibrary> l = [g_dev newLibraryWithSource:src options:opt error:err]; long long dt = (long long)((CFAbsoluteTimeGetCurrent() - t0) * 1e6);
         int k = atomic_fetch_add(&n, 1) + 1; long long tot = atomic_fetch_add(&us, dt) + dt;
         if (k == 1 || k % 100 == 0 || dt >= 300000) MLOG("著色器現編：第 %d 個 %.0f ms，累計 %.1f 秒", k, dt / 1e3, tot / 1e6);
         return l; }
