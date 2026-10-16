@@ -33,7 +33,7 @@ This is a fork of [nxnative](https://github.com/seedds/smbw-mobile) by seedds, w
 You need an Apple Silicon Mac on macOS 26 or later, Xcode, the .NET SDK 10, spirv-cross, a Python 3 with `lz4`, `capstone` and `fonttools`, the game's NSP and your `prod.keys`.
 
 1. Bring the game up once: extract it, rewrite its code and translate its shaders, following [Build by hand](#build-by-hand-mac-for-development) with `G=010051F0207B2000` and `VER=v0`.
-2. Pack the app. With `--embed` it carries everything, so it runs with the workspace disk unplugged:
+2. Pack the app. With `--embed` the game data is copied to this Mac, so it runs with the workspace disk unplugged:
 
 ```sh
 python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o "/Applications/Tomodachi Life.app" --embed
@@ -143,7 +143,7 @@ Once a game has been brought up on the Mac (its workspace holds the RomFS, the r
 python3 scripts/build_mac_app.py 010051F0207B2000 -w /path/to/010051F0207B2000-work -o "/Applications/Tomodachi Life.app" --embed
 ```
 
-Without `--embed` the app is about 2 MB and reads the game data from the workspace, so the disk holding it must stay attached. With `--embed` the app carries all of it (about 7 GB): cloned at no extra cost on the same APFS volume, copied across volumes. Saves and `keymap.txt` live in `~/Library/Application Support/nxnative/<title ID>/`, the log in `~/Library/Logs/nxnative/`. Keep the app for your own use: it points at (or contains) your game data.
+The app itself is about 4 MB. Without `--embed` it reads the game data from the workspace, so the disk holding it must stay attached. With `--embed` the game data (about 7 GB) goes to `~/Library/Application Support/nxnative/<title ID>/game`: cloned at no extra cost on the same APFS volume, copied across volumes. When you pack again, add `--keep-data` to keep the RomFS already there instead of copying it again; it also moves the RomFS out of an app packed by an earlier version, which kept the data inside the app and took over a minute to open. Saves and `keymap.txt` live in `~/Library/Application Support/nxnative/<title ID>/`, the log in `~/Library/Logs/nxnative/`. Keep the app for your own use: it points at your game data.
 
 The game language follows the Mac's preferred language (US English when the game lacks it). Change it under **Game → Game Language** (applies the next time the game opens), pin one when packing with `--lang`, or set it from a terminal with `defaults write org.nxnative.<title ID in lower case>.mac GameLanguage en-US`.
 

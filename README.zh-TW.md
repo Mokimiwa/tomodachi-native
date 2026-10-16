@@ -33,7 +33,7 @@
 需要準備：搭載 Apple Silicon、macOS 26 以上的 Mac；Xcode、.NET SDK 10、spirv-cross；已安裝 `lz4`、`capstone`、`fonttools` 的 Python 3；以及遊戲的 NSP 和你自己的 `prod.keys`。
 
 1. 先完成一次前置作業：解包、改寫程式、轉譯著色器。步驟見英文版的 [Build by hand](README.md#build-by-hand-mac-for-development)，其中 `G=010051F0207B2000`、`VER=v0`。
-2. 打包成 app。加上 `--embed` 會把資料完整打包進 app，之後就算拔掉存放工作區的磁碟也能玩：
+2. 打包成 app。加上 `--embed` 會把遊戲資料複製到這台 Mac，之後就算拔掉存放工作區的磁碟也能玩。再次打包時多加 `--keep-data`，就不用重新複製 RomFS；舊版打包把資料放在 app 裡、要一分多鐘才打得開，加上它也會把 RomFS 搬出來：
 
 ```sh
 python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o "/Applications/Tomodachi Life.app" --embed
