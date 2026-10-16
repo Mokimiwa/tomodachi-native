@@ -28,6 +28,7 @@ typedef struct {
     uint64_t pos;                      // 當前塊已播字節 | Bytes already played of the current block
     AudioUnit au;
     pthread_t null_th; _Atomic int null_run;
+    int null_active;                   // 靜音接收端正在消耗這個輸出（改動與讀取都持 g_aos_lock） | the silent sink is currently consuming this output (changed and read under g_aos_lock)
     dispatch_semaphore_t notify_sem;
     pthread_t notify_th; _Atomic int notify_run, notify_pending, notify_armed;
     int id;                            // 打開序號（日誌裡的 #N；同時開著幾個輸出時分得清，例如 Engage 的 Wwise 與 Unity 自帶的 FMOD） | open sequence number (#N in the log; tells simultaneous outputs apart, e.g. Engage's Wwise and Unity's built-in FMOD)
@@ -124,7 +125,8 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
       if (mute) memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize); }
     return noErr;
 }
-static void au_open(aout *a) {
+static AudioUnit au_create(aout *a) {
+    AudioUnit au = NULL;
     AudioComponentDescription d = {.componentType = kAudioUnitType_Output,
 #if TARGET_OS_IPHONE
                                    .componentSubType = kAudioUnitSubType_RemoteIO,
@@ -133,7 +135,7 @@ static void au_open(aout *a) {
 #endif
                                    .componentManufacturer = kAudioUnitManufacturer_Apple};
     AudioComponent c = AudioComponentFindNext(NULL, &d);
-    if (!c || AudioComponentInstanceNew(c, &a->au)) die("AudioUnit 建不出來");
+    if (!c || AudioComponentInstanceNew(c, &au)) { LOG("【紅】AudioUnit 建不出來：繼續由靜音接收端消耗（沒有聲音）"); return NULL; }
     AudioStreamBasicDescription f = {.mSampleRate = RATE, .mFormatID = kAudioFormatLinearPCM,
                                      .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
                                      .mBytesPerPacket = 2u * a->ch, .mFramesPerPacket = 1, .mBytesPerFrame = 2u * a->ch,
@@ -141,12 +143,37 @@ static void au_open(aout *a) {
     AURenderCallbackStruct cb = {au_render, a};
 #if !TARGET_OS_IPHONE
     { const char *e = getenv("DM_DBG_AU_FRAMES"); if (e) {   // 診斷：Mac 上把聲卡回調改成每次 N 幀（1024 = iOS 缺省，復現爆音） | diagnostic: on the Mac, make the sound card callback ask N frames each time (1024 = the iOS default, reproduces the crackling)
-        UInt32 fr = (UInt32)atoi(e); OSStatus st = AudioUnitSetProperty(a->au, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &fr, sizeof fr);
+        UInt32 fr = (UInt32)atoi(e); OSStatus st = AudioUnitSetProperty(au, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &fr, sizeof fr);
         LOG("audio 聲卡緩衝幀數設為 %u：狀態 %d", fr, (int)st); } }
 #endif
-    if (AudioUnitSetProperty(a->au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f) ||
-        AudioUnitSetProperty(a->au, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) ||
-        AudioUnitInitialize(a->au)) die("AudioUnit 設置失敗");
+    if (AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f) ||
+        AudioUnitSetProperty(au, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) ||
+        AudioUnitInitialize(au)) { LOG("【紅】AudioUnit 設置失敗：繼續由靜音接收端消耗（沒有聲音）"); AudioComponentInstanceDispose(au); return NULL; }
+    return au;
+}
+static void null_start(aout *a);
+// 真出聲的 AudioUnit 在後台建（CoreAudio 偶爾要很久：一次實測開遊戲後 40 秒才建好，渲染線程一直卡在這裡、整段沒聲）。
+// 建好之前由靜音接收端照實時消耗，遊戲的音頻節奏不停；建好後在 g_aos_lock 下切過去（同 dm_audio_suspend 的恢復）。輸出已關（不在登記表裡）就直接丟掉
+// The real-output AudioUnit is created in the background (CoreAudio sometimes takes very long: one measured launch took 40 seconds before it was ready, the render thread stayed stuck here and the whole stretch was silent).
+// Until it is ready the silent sink consumes in real time, so the game's audio pacing never stops; once ready it is switched in under g_aos_lock (like the resume in dm_audio_suspend). If the output was already closed (no longer registered) it is discarded
+static void au_open(aout *a) {
+    int id = a->id; uint64_t t0 = now_ns();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        AudioUnit au = au_create(a);
+        uint64_t ms = (now_ns() - t0) / 1000000;
+        pthread_mutex_lock(&g_aos_lock);
+        int live = 0; for (int i = 0; i < AOMAX; i++) live |= g_aos[i] == a && g_aos[i]->id == id;
+        if (!live) { pthread_mutex_unlock(&g_aos_lock); if (au) { AudioUnitUninitialize(au); AudioComponentInstanceDispose(au); } return; }
+        if (au) {
+            a->au = au;
+            if (atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED && !g_suspended && a->null_active) {
+                atomic_store_explicit(&a->null_run, 0, memory_order_release); pthread_join(a->null_th, NULL); a->null_active = 0;
+                if (AudioOutputUnitStart(au)) { LOG("【紅】audio #%d AudioUnit 啓動失敗：保持靜音接收端", id); null_start(a); }
+            }
+        }
+        pthread_mutex_unlock(&g_aos_lock);
+        if (au) LOG("audio #%d CoreAudio 輸出建好，用時 %llu ms%s", id, (unsigned long long)ms, ms > 1000 ? "（期間由靜音接收端頂著，這段沒聲）" : "");
+    });
 }
 // 靜音接收端：每 5 ms 按 48 kHz 實時消耗。落後超過 100 ms（iOS 在後台把整個進程掛起過、Mac 上 SIGSTOP）就從現在重新起算，不補播漏掉的時間——
 // 補的話會一口氣連取幾百次（幾秒的量），把遊戲的緩衝全釋放、再記幾百次欠載；真機掛起時也不播這段
@@ -162,6 +189,7 @@ static void *null_sink(void *p) {
     }
     return NULL;
 }
+static void null_start(aout *a) { atomic_store_explicit(&a->null_run, 1, memory_order_release); pthread_create(&a->null_th, NULL, null_sink, a); a->null_active = 1; }   // 調用方持 g_aos_lock | caller holds g_aos_lock
 static int real_audio(void) { const char *e = getenv("DM_AUDIO"); return e ? atoi(e) != 0 : TARGET_OS_IPHONE; }
 
 // AudioOutParameter = { int32 sampleRate; uint16 channelCount; uint16 _r; ... }，0 = 系統默認（48 kHz / 2 聲道）
@@ -211,8 +239,10 @@ static Result au_start_at(void *g, void *lr) {
     pthread_mutex_lock(&a->m); int was = atomic_load_explicit(&a->state, memory_order_relaxed); atomic_store_explicit(&a->state, STATE_STARTED, memory_order_release); pthread_mutex_unlock(&a->m);
     au_note(a, was == STATE_STARTED ? "Start（已在播）" : g_suspended ? "Start（App 在後台：先由靜音接收端接手）" : "Start", lr);
     if (was == STATE_STARTED) return RES_OK;
-    if (a->au && !g_suspended) { if (AudioOutputUnitStart(a->au)) die("AudioUnit 啓動失敗"); }
-    else { atomic_store_explicit(&a->null_run, 1, memory_order_release); pthread_create(&a->null_th, NULL, null_sink, a); }
+    pthread_mutex_lock(&g_aos_lock);   // 與後台建好 AudioUnit 的切換互斥 | mutually exclusive with the switch when the background AudioUnit becomes ready
+    if (a->au && !g_suspended) { if (AudioOutputUnitStart(a->au)) { LOG("【紅】audio #%d AudioUnit 啓動失敗：改由靜音接收端消耗", a->id); null_start(a); } }
+    else null_start(a);   // 暫停中，或 AudioUnit 還在後台建 | suspended, or the AudioUnit is still being created in the background
+    pthread_mutex_unlock(&g_aos_lock);
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "開始播放", Result, h_au_Start, void *g) { return au_start_at(g, __builtin_return_address(0)); }
@@ -221,9 +251,10 @@ static void au_stop_at(void *g, void *lr) {   // lr 為 NULL：Close 裡順帶�
     pthread_mutex_lock(&a->m); int was = atomic_load_explicit(&a->state, memory_order_relaxed); atomic_store_explicit(&a->state, STATE_STOPPED, memory_order_release); pthread_mutex_unlock(&a->m);
     if (lr) au_note(a, was == STATE_STARTED ? "Stop" : "Stop（本來就停著）", lr);
     if (was != STATE_STARTED) return;
-    pthread_mutex_lock(&g_aos_lock); int susp = g_suspended; pthread_mutex_unlock(&g_aos_lock);
-    if (a->au && !susp) AudioOutputUnitStop(a->au);
-    else { atomic_store_explicit(&a->null_run, 0, memory_order_release); pthread_join(a->null_th, NULL); }   // 靜音接收端（含暫停期間接手的） | Silent sink (including one that took over during suspension)
+    pthread_mutex_lock(&g_aos_lock);
+    if (a->null_active) { atomic_store_explicit(&a->null_run, 0, memory_order_release); pthread_join(a->null_th, NULL); a->null_active = 0; }   // 靜音接收端（暫停期間、AudioUnit 未建好時接手的） | Silent sink (taking over during suspension or before the AudioUnit is ready)
+    else if (a->au) AudioOutputUnitStop(a->au);
+    pthread_mutex_unlock(&g_aos_lock);
 }
 HLE_FORCE("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", "停止播放", void, h_au_Stop, void *g) { au_stop_at(g, __builtin_return_address(0)); }
 HLE_FORCE("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", "關閉音頻輸出", void, h_au_Close, void *g) {
@@ -256,8 +287,14 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
     // 拿原版音頻對它做互相關（一檔掉落音就這麼驗的）。只在設了變量時打開文件，沒設時這裡只多一次已緩存的判斷
     // Diagnostic switch DM_AUDIO_DUMP=<file>: every PCM block the game appends is written out as is (16-bit, 48 kHz, channel count per the OpenAudioOut log, usually 6). Used to judge "did a given sound play or not":
     // cross-correlate the original game's audio against it (this is how the tier-one drop sound was verified). The file is opened only when the variable is set; when unset this costs only one extra cached check
-    { static FILE *df; static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_DUMP"); on = e != NULL; if (on && !(df = fopen(e, "wb"))) LOG("【紅】DM_AUDIO_DUMP 打不開 %s", e); }
-      if (df && b && b->ptr && b->size) fwrite(b->ptr, 1, (size_t)b->size, df); }
+    // 另寫 <文件>.time.tsv：每 50 塊一行「已寫字節 <TAB> CLOCK_UPTIME_RAW 納秒」，與畫面計時（DM_NVN_REGLUM）同一時鐘，聲音與畫面可對齊（量語音延遲用）
+    // Also writes <file>.time.tsv: one line every 50 blocks of "bytes written <TAB> CLOCK_UPTIME_RAW nanoseconds", the same clock as the picture timing (DM_NVN_REGLUM), so sound and picture can be aligned (for measuring voice latency)
+    { static FILE *df, *tf; static int on = -1; static uint64_t nb, nblk;
+      if (on < 0) { const char *e = getenv("DM_AUDIO_DUMP"); on = e != NULL;
+          if (on && !(df = fopen(e, "wb"))) LOG("【紅】DM_AUDIO_DUMP 打不開 %s", e);
+          if (df) { char tp[1100]; snprintf(tp, sizeof tp, "%s.time.tsv", e); tf = fopen(tp, "w"); } }
+      if (df && b && b->ptr && b->size) { if (tf && nblk++ % 50 == 0) { fprintf(tf, "%llu\t%llu\n", (unsigned long long)nb, (unsigned long long)clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); fflush(tf); }
+          fwrite(b->ptr, 1, (size_t)b->size, df); nb += b->size; } }
     pthread_mutex_lock(&a->m);
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);
@@ -300,12 +337,13 @@ void dm_audio_suspend(int on) {
             if (!a || !a->au || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) continue;
             // 暫停期間改由靜音接收端按實時消耗：否則緩衝不再釋放，FMOD 輸出線程永久等待、遊戲音頻節奏卡死（來電打斷同理）
             // While suspended the silent sink consumes in real time instead: otherwise buffers are no longer released, the FMOD output thread waits forever and the game's audio pacing stalls (same for an incoming call interruption)
-            if (on) { AudioOutputUnitStop(a->au); atomic_store_explicit(&a->null_run, 1, memory_order_release); pthread_create(&a->null_th, NULL, null_sink, a); }
-            else { atomic_store_explicit(&a->null_run, 0, memory_order_release); pthread_join(a->null_th, NULL);
+            if (on) { if (!a->null_active) { AudioOutputUnitStop(a->au); null_start(a); } }
+            else { if (!a->null_active) continue;
+                   atomic_store_explicit(&a->null_run, 0, memory_order_release); pthread_join(a->null_th, NULL); a->null_active = 0;
                    OSStatus st = AudioOutputUnitStart(a->au);
                    if (st) {   // 會話還被別人佔著（通話沒掛就切回遊戲、打斷結束時人還在別的 App）：不致命，繼續由靜音接收端頂著，等下一次恢復再試 | The session is still held by someone else (switched back to the game with a call not yet hung up, or the user is still in another app when the interruption ends): not fatal, the silent sink keeps covering, and we retry at the next resume
                        LOG("【紅】AudioUnit 恢復失敗（狀態 %d）：保持靜音接收端，等下次恢復重試", (int)st);
-                       atomic_store_explicit(&a->null_run, 1, memory_order_release); pthread_create(&a->null_th, NULL, null_sink, a); failed = 1; } }
+                       null_start(a); failed = 1; } }
         }
         if (failed) g_suspended = 1;   // 沒恢復成：狀態留在「暫停」，下次調 0 會再試 | Resume did not succeed: the state stays "suspended", and the next call with 0 will retry
         LOG("audio %s", on ? "暫停（切後台 / 被打斷）" : failed ? "恢復未成" : "恢復（回前台 / 打斷結束）");
