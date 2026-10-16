@@ -321,6 +321,9 @@ void loader_hash_log(void) {
     }
 }
 
+// 可選剪口的選項名表（apply_options 填；iOS 不填，恆為空） | option names of the optional cuts (filled by apply_options; not filled on iOS, always empty)
+static char g_opt_known[16][32] __attribute__((unused)); static int g_nopt_known;
+int dm_option_known(const char *name) { for (int i = 0; i < g_nopt_known; i++) if (!strcmp(g_opt_known[i], name)) return 1; return 0; }
 #if TARGET_OS_IPHONE
 // iOS 不許運行時裝入的代碼執行，且蘋果只許可執行文件有一個帶執行權限的段（ITMS-90999）：映像由 dm/ios/tools/gen_embed.py 編進本可執行文件——
 // 代碼兩塊（原 text、補丁區）是 __TEXT 裡的節，W（ro 餘部 + data + bss）是單獨的 RW 段。三塊在文件裡不相鄰；這裡保留一塊連續地址，
@@ -387,6 +390,36 @@ static uint8_t *slurp(const char *path, size_t *n) {
 // 之間（ro 與 data 同頁只能一起）可寫
 // Seal the code area immediately after copying into anonymous pages (16 KB pages): [0, text_end) and the patch area are read-only+execute, and from then on any write to the code area crashes on the spot;
 // what lies between (ro and data on the same page can only go together) is writable
+// 可選剪口（patch_nso.py OPTIONS → <名>.options.tsv，列：選項 偏移 原字節 新字節 理由）：DM_OPTIONS=逗號分隔的選項名，在代碼區封頁之前套上，
+// 每條先核原字節（不符報紅、不套）。表裡出現過的選項名都記下，前端據此決定顯示哪些開關（dm_option_known）
+// Optional cuts (patch_nso.py OPTIONS -> <name>.options.tsv, columns: option, offset, original bytes, new bytes, reason): DM_OPTIONS = comma-separated option names, applied before the code area is sealed,
+// each one checking the original bytes first (a mismatch is reported and not applied). Every option name seen in the table is remembered, and the front end shows only those switches (dm_option_known)
+static int option_wanted(const char *name) {
+    const char *e = getenv("DM_OPTIONS"); size_t n = strlen(name);
+    for (const char *q = e; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) if (!strncmp(q, name, n) && (q[n] == ',' || !q[n])) return 1;
+    return 0;
+}
+static int hexbytes(const char *h, uint8_t *out, size_t cap) {
+    size_t n = strlen(h); if (n % 2 || n / 2 > cap) return -1;
+    for (size_t i = 0; i < n / 2; i++) { unsigned v; if (sscanf(h + 2 * i, "%2x", &v) != 1) return -1; out[i] = (uint8_t)v; }
+    return (int)(n / 2);
+}
+static void apply_options(module_t *m, const char *dir) {
+    char path[1024], line[1024]; snprintf(path, sizeof path, "%s/%s.options.tsv", dir, m->name);
+    FILE *f = fopen(path, "r"); if (!f) return;
+    while (fgets(line, sizeof line, f)) {
+        char name[32], ob[64], nb[64]; unsigned long long off; uint8_t o[32], w[32];
+        if (line[0] == '#' || sscanf(line, "%31[^\t]\t%llx\t%63[^\t]\t%63[^\t\n]", name, &off, ob, nb) != 4) continue;
+        if (!dm_option_known(name) && g_nopt_known < 16) strlcpy(g_opt_known[g_nopt_known++], name, sizeof g_opt_known[0]);
+        if (!option_wanted(name)) continue;
+        int n = hexbytes(ob, o, sizeof o);
+        if (n <= 0 || hexbytes(nb, w, sizeof w) != n || off + (unsigned)n > m->size) { LOG("【紅】可選剪口 %s：%s+%#llx 這一行格式不對，不套", name, m->name, off); continue; }
+        if (memcmp(m->base + off, o, (size_t)n)) { LOG("【紅】可選剪口 %s：%s+%#llx 原字節不符（映像與表不是同一次出包？），不套", name, m->name, off); continue; }
+        memcpy(m->base + off, w, (size_t)n);
+        LOG("可選剪口 %s：%s+%#llx 已套", name, m->name, off);
+    }
+    fclose(f);
+}
 static void map_image(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.patched.bin", dir, m->name);
     size_t sz; uint8_t *raw = slurp(path, &sz);
@@ -394,6 +427,7 @@ static void map_image(module_t *m, const char *dir) {
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
     memcpy(m->base, raw, sz); free(raw); install_key_page(m);
+    apply_options(m, dir);   // 封頁之前 | before sealing
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
     uint64_t po = m->patch_off & ~0x3FFFull;

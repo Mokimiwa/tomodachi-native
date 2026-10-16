@@ -25,7 +25,7 @@ This is a fork of [nxnative](https://github.com/seedds/smbw-mobile) by seedds, w
 | | |
 |---|---|
 | **Playable on the Mac** | The island tour, naming the island, creating Miis (by questions or in the editor), with sound |
-| **Mac app** | Menus, full screen, pause, screenshots, mouse, trackpad and keyboard, 13 game languages |
+| **Mac app** | Menus, full screen, pause, screenshots, 60 FPS, MetalFX upscaling, mouse, trackpad and keyboard, 13 game languages |
 | **iPhone and iPad** | Not packaged yet |
 
 ## Quick start (Mac)
@@ -45,6 +45,7 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 
 - **A real Mac app:** the game's icon, full screen and three window sizes, pause, screenshots saved to your screenshot folder, and a question before quitting.
 - **Mouse, trackpad and keyboard:** click anywhere to tap the screen there. Two-finger gestures turn the camera; pinches and three-finger swipes reach the shoulder buttons. Every binding can be changed in `keymap.txt` (**Edit Controls…**, ⌘,).
+- **Picture:** when the window or full screen is larger than the game's 1920 × 1080, MetalFX upscaling keeps edges and text sharper (**View → MetalFX Upscaling**). **Game → Frame Rate** switches between the original 30 FPS and 60 FPS the next time you open the game.
 - **Typing names:** a sheet in the game's own colours, with your input methods and paste.
 - **13 languages:** the game follows your Mac's language; switch it under **Game → Game Language**.
 - **Saves** live in `~/Library/Application Support/nxnative/010051F0207B2000/save`.
@@ -72,6 +73,7 @@ Details per part are in [How it works in detail](#how-it-works-in-detail).
 ## Known issues
 
 - Clicks have only been tried on the opening menus (naming the island and its confirmation). If a click does nothing in a later scene, add `mouse:Left A` to `keymap.txt` to move the hand with the mouse instead.
+- At 60 FPS, scenes with a lot on screen (such as the opening flight over the island) can run at about 55 FPS.
 
 ## Game profiles
 
@@ -149,6 +151,7 @@ In the app:
 
 - **Mouse:** in Tomodachi Life the mouse works like a finger: a click taps the screen where you click, and the right button is B. Other games capture the mouse when you click the picture; it then moves the game's hand, with the left button as A and the right as B, until you press ⌘ (or an unmapped Esc). Set `mouse:Left` in `keymap.txt` to `Pointer` or `A` to switch between the two. The trackpad turns the camera (two-finger scroll or rotate), pinches for ZL / ZR and swipes with three fingers for L / R.
 - **Menus:** pause (⌘P), screenshot to your screenshot folder (⇧⌘S), window sizes (⌘1–⌘3), full screen (⌃⌘F, or the green button), Edit Controls (⌘,) to open `keymap.txt`, which is reread when you come back to the game. Closing the window asks before quitting.
+- **Picture:** **View → MetalFX Upscaling** (on by default) enlarges the game picture with MetalFX instead of a plain bilinear stretch. **Game → Frame Rate** appears when the game's profile has a 60 FPS cut; the choice is stored as `FrameRate` in the app's defaults and applies the next time the game opens.
 - **Text entry:** names and other text are typed in a sheet over the game, with paste and your input methods.
 
 ## Install and play
@@ -171,7 +174,7 @@ The first time each new scene appears, it can stutter while Metal compiles its p
 
 | Part | State |
 |---|---|
-| Rewriter (`dm/tools/patch_nso.py`, `DM_RULESET=native`) | Runs unchanged on every module of both games. Per-build cuts are keyed by the module's build ID |
+| Rewriter (`dm/tools/patch_nso.py`, `DM_RULESET=native`) | Runs unchanged on every module of both games. Per-build cuts are keyed by the module's build ID. Optional cuts (`OPTIONS`, such as Tomodachi Life's 60 FPS) are checked at packing time but only listed in `<module>.options.tsv`; the Mac host applies the ones named in `DM_OPTIONS` before sealing the code |
 | Host (`dm/host`) | Stands in for the Horizon kernel and the system services the games call: threads and synchronization, memory, file system with transactional saves, HID, audio, movies (VP9 through libvpx), software keyboard, focus and lifecycle |
 | Graphics (`dm/gfx`) | NVN on Metal 4. Shaders are extracted by `shader_split.py` from Nintendo's containers and from Unity's `Shader` objects, then translated offline. Mario: 16,266 of 16,268 shaders compile. Engage: 9,268 of 9,269. Tomodachi Life: 14,381 of 14,388 |
 | Audio | Games that carry the SDK's audio renderer (Mario, Tomodachi Life) run it in-process; games that use AudioOut directly (Engage: Wwise) feed it straight. Output goes through Core Audio (default on iOS, `DM_AUDIO=1` on the Mac) |
@@ -274,7 +277,8 @@ Record on the game version you ship. At launch the log names each list it read a
 
 This project is built on other people's work:
 
-- **[nxnative](https://github.com/seedds/smbw-mobile)** (MIT) by seedds: this repository continues it, with Tomodachi Life and the Mac app added.
+- **[nxnative](https://github.com/seedds/smbw-mobile)** (MIT) by seedds: this repository continues it, with Tomodachi Life and the Mac app added. Later nxnative work is ported by hand, such as handing a submission to the GPU every 64 draws.
+- **[Fl4sh9174](https://github.com/Fl4sh9174/Switch-Emulator-Ultrawide-FPS-Mods)**: the 60 FPS change for Tomodachi Life (one instruction in the frame-rate control) comes from their emulator mod.
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative (first called smbw-mobile) started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
 - **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2 in `dm/third_party/ryujinx`, with one change: the FMZ multiply mode (`Instructions/InstEmitFloatArithmetic.cs`, where a zero factor makes the product 0 as on Maxwell)) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).

@@ -58,7 +58,7 @@ uint64_t front_game_res(int docked) {
 enum { T_ABOUT, T_EDIT_CONTROLS, T_HIDE, T_HIDE_OTHERS, T_SHOW_ALL, T_QUIT, T_EDIT, T_UNDO, T_REDO, T_CUT, T_COPY, T_PASTE, T_SELECT_ALL,
        T_GAME, T_PAUSE, T_RESUME, T_SHOT, T_SAVES, T_VIEW, T_FULL, T_WINDOW, T_MIN, T_ZOOM, T_FRONT, T_HELP, T_CONTROLS, T_LOG,
        T_HINT_CLICK, T_HINT_CMD, T_PAUSED, T_QUIT_Q, T_QUIT_INFO, T_QUIT_OK, T_OK, T_CANCEL, T_INPUT, T_SHOT_SAVED,
-       T_SAVE_FAIL, T_SAVE_SPACE, T_SAVE_OTHER, T_CONTROLS_MOUSE, T_CONTROLS_TAP, T_CONTROLS_BODY, T_LANG, T_LANG_SYS, T_LANG_NEXT, T_N };
+       T_SAVE_FAIL, T_SAVE_SPACE, T_SAVE_OTHER, T_CONTROLS_MOUSE, T_CONTROLS_TAP, T_CONTROLS_BODY, T_LANG, T_LANG_SYS, T_LANG_NEXT, T_FPS, T_FPS_NEXT, T_FPS_SLOW, T_UPSCALE, T_N };
 static const char *const k_text[T_N][2] = {
     [T_ABOUT] = {"About %@", "關於「%@」"},
     [T_EDIT_CONTROLS] = {"Edit Controls…", "編輯按鍵…"},
@@ -87,6 +87,9 @@ static const char *const k_text[T_N][2] = {
     [T_SAVE_OTHER] = {"The save file couldn't be written (error %d). The game will try again the next time it saves.", "存檔寫不進去（錯誤 %d）。遊戲下次存檔時會再試。"},
     [T_LANG] = {"Game Language", "遊戲語言"}, [T_LANG_SYS] = {"Same as Mac", "跟隨 Mac"},
     [T_LANG_NEXT] = {"The game switches to %@ the next time you open it.", "下次開啟遊戲時會換成%@。"},
+    [T_FPS] = {"Frame Rate", "幀率"}, [T_FPS_NEXT] = {"The game switches to %d FPS the next time you open it.", "下次開啟遊戲時會改成 %d FPS。"},
+    [T_FPS_SLOW] = {"Busy 3D scenes may run below 60 FPS.", "比較複雜的 3D 場景可能跑不滿 60 FPS。"},
+    [T_UPSCALE] = {"MetalFX Upscaling", "MetalFX 放大"},
     // 操作方式的滑鼠那行按左鍵現在的映射選（Pointer = 點哪觸屏哪，否則鎖定推小手），後面接共用的 T_CONTROLS_BODY
     // The mouse line of Controls is picked by the left button's current mapping (Pointer = touch where clicked, otherwise capture and push the hand), followed by the shared T_CONTROLS_BODY
     [T_CONTROLS_MOUSE] = {"Mouse: click the game, then move the mouse to move the hand. Left button A, right button B. Press ⌘ to release the mouse.\n",
@@ -258,6 +261,13 @@ static const struct { const char *code, *name; } k_langs[] = {
     {"zh-Hans", "簡體中文"}, {"zh-Hant", "繁體中文"},
 };
 static NSString *lang_pref(void) { return [NSUserDefaults.standardUserDefaults stringForKey:@"GameLanguage"] ?: @""; }
+// 幀率（可選剪口 fps60，只在這個遊戲的 options.tsv 有它時顯示）：選了寫進 defaults「FrameRate」，啓動器下次按它設 DM_OPTIONS；30 = 刪掉這個鍵
+// 畫面放大（defaults「Upscale」，缺省開）：即時生效，改 mtl_set_upscale
+// Frame rate (optional cut fps60, shown only when this game's options.tsv has it): a choice is written to defaults "FrameRate" and the launcher sets DM_OPTIONS from it next time; 30 = removes the key
+// Upscaling (defaults "Upscale", on by default): takes effect immediately through mtl_set_upscale
+void mtl_set_upscale(int on);
+static int fps_pref(void) { return (int)[NSUserDefaults.standardUserDefaults integerForKey:@"FrameRate"] == 60 ? 60 : 30; }
+static int upscale_pref(void) { id v = [NSUserDefaults.standardUserDefaults objectForKey:@"Upscale"]; return v ? [v boolValue] : 1; }
 
 // ---------- 菜單與窗口代理 | Menus and the window delegate ----------
 @interface DMApp : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation>
@@ -275,6 +285,18 @@ static NSString *lang_pref(void) { return [NSUserDefaults.standardUserDefaults s
     (void)sender; if (!g_keymap_path[0]) return;
     if (access(g_keymap_path, F_OK)) { FILE *f = fopen(g_keymap_path, "w"); if (f) { fputs("# key:J A  …  see the Controls page in Help\n", f); fclose(f); } }
     [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:@(g_keymap_path)]];
+}
+- (void)setFrameRate:(NSMenuItem *)it {
+    int fps = (int)it.tag; if (fps == fps_pref()) return;
+    if (fps == 60) [NSUserDefaults.standardUserDefaults setInteger:60 forKey:@"FrameRate"]; else [NSUserDefaults.standardUserDefaults removeObjectForKey:@"FrameRate"];
+    capture_set(0);
+    NSAlert *a = [NSAlert new]; a.messageText = [NSString stringWithFormat:T(T_FPS_NEXT), fps]; if (fps == 60) a.informativeText = T(T_FPS_SLOW); [a addButtonWithTitle:T(T_OK)];
+    if (g_win.attachedSheet) [a runModal]; else [a beginSheetModalForWindow:g_win completionHandler:nil];
+}
+- (void)toggleUpscale:(NSMenuItem *)it {
+    (void)it; int on = !upscale_pref();
+    [NSUserDefaults.standardUserDefaults setBool:on forKey:@"Upscale"]; mtl_set_upscale(on);
+    LOG("前端：MetalFX 放大%s", on ? "開" : "關");
 }
 - (void)setGameLanguage:(NSMenuItem *)it {
     int i = (int)it.tag; NSString *code = @(k_langs[i].code);
@@ -310,6 +332,8 @@ static NSString *lang_pref(void) { return [NSUserDefaults.standardUserDefaults s
     if (a == @selector(setGameSize:)) { NSSize c = g_view.bounds.size; it.state = !fs && fabs(c.width - it.tag) < 1 ? NSControlStateValueOn : NSControlStateValueOff; return !fs && !g_win.miniaturized; }
     if (a == @selector(editControls:)) return g_keymap_path[0] != 0;
     if (a == @selector(showSaves:)) return getenv("DM_SAVE") != NULL;
+    if (a == @selector(setFrameRate:)) { it.state = it.tag == fps_pref() ? NSControlStateValueOn : NSControlStateValueOff; return YES; }
+    if (a == @selector(toggleUpscale:)) { it.state = upscale_pref() ? NSControlStateValueOn : NSControlStateValueOff; return YES; }
     if (a == @selector(setGameLanguage:)) { it.state = [@(k_langs[it.tag].code) isEqualToString:lang_pref()] ? NSControlStateValueOn : NSControlStateValueOff; return YES; }
     if (a == @selector(showLog:)) return log_path() != nil;
     return YES;
@@ -365,11 +389,18 @@ static void menus_build(void) {
         item_add(lang, k_langs[i].name ? @(k_langs[i].name) : T(T_LANG_SYS), @selector(setGameLanguage:), nil, 0, g_app).tag = i;
         if (!i) [lang addItem:NSMenuItem.separatorItem];
     }
+    if (dm_option_known("fps60")) {   // 這個遊戲有 60 FPS 的可選剪口才給選 | offered only when this game has the 60 FPS optional cut
+        NSMenu *fps = [[NSMenu alloc] initWithTitle:T(T_FPS)]; [game addItemWithTitle:T(T_FPS) action:nil keyEquivalent:@""].submenu = fps;
+        item_add(fps, @"30 FPS", @selector(setFrameRate:), nil, 0, g_app).tag = 30;
+        item_add(fps, @"60 FPS", @selector(setFrameRate:), nil, 0, g_app).tag = 60;
+    }
     NSMenu *view = menu_add(bar, T(T_VIEW));
     static const int widths[3] = {960, 1280, 1600};
     for (int i = 0; i < 3; i++) item_add(view, [NSString stringWithFormat:@"%d × %d", widths[i], widths[i] * 9 / 16], @selector(setGameSize:), [NSString stringWithFormat:@"%d", i + 1], CMD, g_app).tag = widths[i];
     [view addItem:NSMenuItem.separatorItem];
     item_add(view, T(T_FULL), @selector(toggleFullScreen:), @"f", CMD | NSEventModifierFlagControl, nil);
+    [view addItem:NSMenuItem.separatorItem];
+    item_add(view, T(T_UPSCALE), @selector(toggleUpscale:), nil, 0, g_app);
     NSMenu *win = menu_add(bar, T(T_WINDOW));
     item_add(win, T(T_MIN), @selector(performMiniaturize:), @"m", CMD, nil);
     item_add(win, T(T_ZOOM), @selector(performZoom:), nil, 0, nil);
@@ -395,7 +426,7 @@ void front_run(void (*guest)(void)) {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         g_app = [DMApp new]; NSApp.delegate = g_app;
-        menus_build();
+        menus_build(); mtl_set_upscale(upscale_pref());
         NSRect r = NSMakeRect(0, 0, 1280, 720);
         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable

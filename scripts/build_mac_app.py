@@ -125,12 +125,14 @@ if [ -z "$L" ]; then
     es-ES*|es) L=es;; es*) L=es-419;; de*) L=de;; it*) L=it;; nl*) L=nl;; *) L=en-US;;
   esac
 fi
+# 幀率：defaults 裡的 FrameRate 是 60 就開可選剪口 fps60（遊戲沒有這個剪口時宿主略過） | frame rate: FrameRate 60 in defaults turns on the optional cut fps60 (the host skips it when the game has no such cut)
+O=""; [ "$(defaults read {bundle_id} FrameRate 2>/dev/null)" = 60 ] && O=fps60
 if [ ! -d "$G/{romfs}/" ]; then
   case "$L" in zh*) M="找不到遊戲資料（RomFS）：請接上放遊戲的那顆磁碟。";; *) M="The game data (RomFS) is missing. Connect the disk that holds the game.";; esac
   osascript -e "display alert \\"{name}\\" message \\"$M\\"" ; exit 1
 fi
 exec env DM_NVN_SHMAP="$C/Resources/profile/shader_map.tsv" DM_ROOT="$SUP" DM_ROMFS="$G/{romfs}" DM_SAVE="$SUP/save" DM_TEMP="$SUP/temp" DM_MSL_DIR="$G/{msl}" DM_FONT_DIR="$G/{font}" \\
-    DM_LANG="$L" DM_OPMODE={opmode} DM_WINDOW=1 DM_AUDIO=1 "$C/MacOS/dmhost" "$G/{patched}" >"$LOGD/{game}.log" 2>&1
+    DM_LANG="$L" DM_OPTIONS="$O" DM_OPMODE={opmode} DM_WINDOW=1 DM_AUDIO=1 "$C/MacOS/dmhost" "$G/{patched}" >"$LOGD/{game}.log" 2>&1
 '''
 
 

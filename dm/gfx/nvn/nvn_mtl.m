@@ -2,6 +2,8 @@
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <MetalFX/MetalFX.h>
+#undef I   // MetalFX 經 simd 帶進 <complex.h> 的虛數單位巨集 I，與下面的局部數組名衝突 | MetalFX pulls in <complex.h> through simd, whose imaginary-unit macro I collides with a local array name below
 #import <QuartzCore/CAMetalDisplayLink.h>
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -6350,6 +6352,55 @@ static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
     if (!v) { RED_ONCE(69, "出圖：sRGB 交換鏈貼圖的非 sRGB 視圖建不出（格式 %lu），按解碼後的值出圖", (unsigned long)src.pixelFormat); return src; }
     return v;
 }
+// MetalFX 空間放大（出圖）：遊戲畫面固定 1920×1080（掌機 1280×720），窗口與全屏的實際像素大得多（14 吋 MacBook Pro 全屏 3024×1701），
+// 原本由出圖著色器雙線性拉大，邊緣發糊。開著時先用 MetalFX 空間放大器（邊緣感知 + 銳化）把有效畫面放大到出圖視口的像素尺寸，出圖再 1:1 畫上去。
+// 只在放大（視口比有效畫面大 5% 以上）且有效區從 (0,0) 起時用；放大器建不出（設備不支持、倍率超出）就退回雙線性，記一行。
+// 上屏（Metal 4，最多 3 幀在途）每個出圖槽各一個放大器與輸出貼圖，免得下一幀改寫上一幀還在讀的輸出；截圖走一般命令緩衝，另一組。
+// 開關：前端 mtl_set_upscale（選單「MetalFX 放大」），未設時按 DM_NVN_UPSCALE（缺省開，0 關）
+// MetalFX spatial upscaling (present): the game picture is fixed at 1920x1080 (1280x720 handheld) while the window and full screen have far more pixels (3024x1701 in full screen on a 14-inch MacBook Pro),
+// and the present shader used to stretch it bilinearly, which blurs edges. When on, the MetalFX spatial scaler (edge-aware + sharpening) first enlarges the valid picture to the pixel size of the present viewport, and the present then draws it 1:1.
+// Used only when enlarging (the viewport is more than 5% larger than the valid picture) and the valid area starts at (0,0); when the scaler cannot be created (device unsupported, scale out of range) it falls back to bilinear and logs one line.
+// The on-screen present (Metal 4, up to 3 frames in flight) has one scaler and output texture per present slot, so the next frame never overwrites an output the previous one is still reading; screenshots use a plain command buffer and their own set.
+// Switch: the front end's mtl_set_upscale (menu "MetalFX Upscaling"); when unset, DM_NVN_UPSCALE (on by default, 0 = off)
+static _Atomic int g_upscale = -1;
+void mtl_set_upscale(int on) { atomic_store(&g_upscale, on ? 1 : 0); }
+static int upscale_on(void) {
+    int v = atomic_load(&g_upscale);
+    if (v < 0) { const char *e = getenv("DM_NVN_UPSCALE"); v = !(e && !strcmp(e, "0")); atomic_store(&g_upscale, v); }
+    return v;
+}
+typedef struct { __strong id scaler; __strong id<MTLTexture> out; MTLPixelFormat fmt; NSUInteger iw, ih, ow, oh; int failed; } fx_slot;
+static fx_slot g_fx_m4[3], g_fx_plain;
+static id<MTLTexture> fx_upscale(fx_slot *st, id cb, int m4, id<MTLTexture> in, NSUInteger cx, NSUInteger cy, NSUInteger cw, NSUInteger ch, NSUInteger ow, NSUInteger oh) {
+    if (!upscale_on() || cx || cy || (ow < cw * 1.05 && oh < ch * 1.05)) return nil;
+    static int supported = -1; if (supported < 0) { supported = [MTLFXSpatialScalerDescriptor supportsDevice:g_dev]; if (!supported) MLOG("MetalFX 空間放大：這台設備不支持，出圖用雙線性"); }
+    if (!supported) return nil;
+    if (!st->scaler || st->fmt != in.pixelFormat || st->iw != cw || st->ih != ch || st->ow != ow || st->oh != oh) {
+        if (st->failed && st->fmt == in.pixelFormat && st->iw == cw && st->ih == ch && st->ow == ow && st->oh == oh) return nil;   // 同一組尺寸失敗過就不再試 | do not retry a size combination that already failed
+        st->fmt = in.pixelFormat; st->iw = cw; st->ih = ch; st->ow = ow; st->oh = oh; st->failed = 0;
+        MTLFXSpatialScalerDescriptor *d = [MTLFXSpatialScalerDescriptor new];
+        d.inputWidth = cw; d.inputHeight = ch; d.outputWidth = ow; d.outputHeight = oh;
+        d.colorTextureFormat = in.pixelFormat; d.outputTextureFormat = in.pixelFormat;
+        d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;   // 交換鏈存的是 sRGB 編碼後的值 | the swapchain stores sRGB-encoded values
+        id sc = nil;
+        if (m4) { static id<MTL4Compiler> comp; if (!comp) { NSError *e = nil; comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e]; }
+                  sc = comp ? [d newSpatialScalerWithDevice:g_dev compiler:comp] : nil; }
+        else sc = [d newSpatialScalerWithDevice:g_dev];
+        id<MTLTexture> out = nil;
+        if (sc) { MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:in.pixelFormat width:ow height:oh mipmapped:NO];
+                  td.usage = [(id<MTLFXSpatialScalerBase>)sc outputTextureUsage] | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate; out = [g_dev newTextureWithDescriptor:td]; }
+        if (st->out) defer_obj_release(st->out);
+        st->scaler = nil; st->out = nil;
+        if (!sc || !out) { st->failed = 1; MLOG("【紅】MetalFX 空間放大建不出（%lux%lu → %lux%lu 格式 %lu），這組尺寸出圖用雙線性", (unsigned long)cw, (unsigned long)ch, (unsigned long)ow, (unsigned long)oh, (unsigned long)in.pixelFormat); return nil; }
+        res_add(out); res_commit();
+        st->scaler = sc; st->out = out;
+        static int n; if (n++ < 6) MLOG("MetalFX 空間放大：%lux%lu → %lux%lu 格式 %lu", (unsigned long)cw, (unsigned long)ch, (unsigned long)ow, (unsigned long)oh, (unsigned long)in.pixelFormat);
+    }
+    id<MTLFXSpatialScalerBase> sc = st->scaler;
+    sc.colorTexture = in; sc.outputTexture = st->out; sc.inputContentWidth = cw; sc.inputContentHeight = ch;
+    if (m4) [(id<MTL4FXSpatialScaler>)sc encodeToCommandBuffer:(id<MTL4CommandBuffer>)cb]; else [(id<MTLFXSpatialScaler>)sc encodeToCommandBuffer:(id<MTLCommandBuffer>)cb];
+    return st->out;
+}
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (crop && (crop[2] || crop[3])) {
@@ -6379,11 +6430,13 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].texture = dst; rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionClear;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLTexture> in = present_raw_src(src), fx = fx_upscale(&g_fx_plain, cb, 0, in, cx, cy, cw, ch, (NSUInteger)vp.width, (NSUInteger)vp.height);   // 放大在出圖通道之前編 | the upscale is encoded before the present pass
+    if (fx) { in = fx; cx = cy = 0; cw = fx.width; ch = fx.height; }
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
-    float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
-                   (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:in atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+    float uv[8] = {(float)cx / in.width, (float)cy / in.height, (float)cw / in.width, (float)ch / in.height,
+                   (cx + 0.5f) / in.width, (cy + 0.5f) / in.height, (cx + cw - 0.5f) / in.width, (cy + ch - 0.5f) / in.height};
     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [en endEncoding];
@@ -6408,15 +6461,17 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    id<MTLTexture> in = present_raw_src(src), fx = fx_upscale(&g_fx_m4[uv_i % 3], cb, 1, in, cx, cy, cw, ch, (NSUInteger)vp.width, (NSUInteger)vp.height);   // 放大在出圖通道之前編，出圖通道開頭的隊列屏障等它做完 | the upscale is encoded before the present pass; the queue barrier at the start of the present pass waits for it
+    if (fx) { in = fx; cx = cy = 0; cw = fx.width; ch = fx.height; }
     id<MTL4RenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
     if (!en) { MLOG("【紅】M4 出圖渲染編碼器創建失敗"); return 0; }
     [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [en setArgumentTable:g_present_args atStages:MTLRenderStageFragment];
-    [g_present_args setTexture:present_raw_src(src).gpuResourceID atIndex:0];
+    [g_present_args setTexture:in.gpuResourceID atIndex:0];
     [g_present_args setSamplerState:g_blit_samp.gpuResourceID atIndex:0];
     float *uv = g_present_uv[uv_i].contents;
-    uv[0] = (float)cx / src.width; uv[1] = (float)cy / src.height; uv[2] = (float)cw / src.width; uv[3] = (float)ch / src.height;
-    uv[4] = (cx + 0.5f) / src.width; uv[5] = (cy + 0.5f) / src.height; uv[6] = (cx + cw - 0.5f) / src.width; uv[7] = (cy + ch - 0.5f) / src.height;
+    uv[0] = (float)cx / in.width; uv[1] = (float)cy / in.height; uv[2] = (float)cw / in.width; uv[3] = (float)ch / in.height;
+    uv[4] = (cx + 0.5f) / in.width; uv[5] = (cy + 0.5f) / in.height; uv[6] = (cx + cw - 0.5f) / in.width; uv[7] = (cy + ch - 0.5f) / in.height;
     [g_present_args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
     [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];

@@ -213,6 +213,23 @@ CUTS = {
     (0x3f77c0, '69824379', '29008052', 'UI 手柄選指針模式：觸屏允許位 ldrh w9,[x19,#0x1c0] → mov w9,#1（觸屏指針模式不被拉回焦點模式）', '僅宿主'),
   ],
 }
+# ---- 可選剪口：{NSO 構建號: {選項名: [(偏移, 原字節, 新字節, 理由)]}} ----
+# 出包時照樣逐條斷言原字節，但不寫進映像，只列進 <名>.options.tsv；Mac 宿主裝載時按 DM_OPTIONS（逗號分隔的選項名）在封頁之前套上，套前再核一次原字節（loader.c）。
+# 給玩家在 App 裡開關、重開遊戲才生效的改動（如 60 FPS）。iOS 的代碼來自簽名的可執行文件，裝載時改不了，這類選項目前只有 Mac 有
+# ---- Optional cuts: {NSO build ID: {option name: [(offset, original bytes, new bytes, reason)]}} ----
+# At packaging the original bytes are asserted one by one as usual, but nothing is written into the image; they are only listed in <name>.options.tsv, and the Mac host applies them at load time, before sealing the pages, per DM_OPTIONS (comma-separated option names), checking the original bytes again (loader.c).
+# For changes the player switches in the app that take effect after the game restarts (such as 60 FPS). On iOS the code comes from the signed executable and cannot be changed at load time, so such options exist only on the Mac for now
+OPTIONS = {
+  # 朋友收集 夢想生活 v0 main：60 FPS。幀率控制函數 0x28b2b8 從設定讀出圖間隔，存 +0x40，再算 60 / 間隔 存 +0x50（遊戲的每幀步長按它算）。
+  # 0x28b35c 的 ldr w9,[x0,#0x24] 換成 mov w20,#1：出圖間隔 1，幀率 60，步長減半，遊戲速度不變。位址取自 Fl4sh9174 的 60 FPS 模組（v1.0.0 pchtxt），
+  # 宿主反匯編核過；實測同一份操作按時間對齊後，60 FPS 第 2N 幀與 30 FPS 第 N 幀畫面相同（只把宿主出圖改成每節拍一幀則是兩倍速）
+  # Tomodachi Life: Living the Dream v0 main: 60 FPS. The frame-rate control function 0x28b2b8 reads the present interval from its settings, stores it at +0x40, then stores 60 / interval at +0x50 (the game's per-frame step follows it).
+  # Replacing ldr w9,[x0,#0x24] at 0x28b35c with mov w20,#1 gives interval 1, 60 fps and half the step, so the game runs at the same speed. Address from Fl4sh9174's 60 FPS mod (v1.0.0 pchtxt),
+  # checked by disassembly in the host; measured: with the same input aligned by time, frame 2N at 60 FPS matches frame N at 30 FPS (only making the host present every tick runs the game at double speed)
+  '56bf85bd535413464cb75bb6c2683b67': {
+    'fps60': [(0x28b35c, '092440b9', '34008052', '幀率控制：出圖間隔 ldr w9,[x0,#0x24] → mov w20,#1（60 FPS，步長減半）')],
+  },
+}
 # ---- 已登記觀測門：{NSO 構建號: [(偏移, 編號, 原指令字, 理由)]}。編號與宿主 hle.h 的 OBS_* 一致；
 # 原指令須與位置無關（不得 PC 相對 / 分支 / 涉 x18·tpidr），離線斷言；宿主未掛回調時門塊進出一次即返回 ----
 # ---- Registered observation gates: {NSO build ID: [(offset, number, original instruction word, reason)]}. Numbers match OBS_* in the host's hle.h;
@@ -306,6 +323,10 @@ for off, ob, nb, why, scope in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'剪口原字節不符 {off:#x}：{bytes(IMG[off:off + len(ob)]).hex()}'
     IMG[off:off + len(nb)] = nb
+options = [(name, off, ob, nb, why) for name, rows in OPTIONS.get(BUILD_ID, {}).items() for off, ob, nb, why in rows]
+for name, off, ob, nb, why in options:   # 可選剪口只核不寫 | optional cuts are checked, not written
+    o, n = bytes.fromhex(ob), bytes.fromhex(nb)
+    assert len(o) == len(n) and IMG[off:off + len(o)] == o, f'可選剪口 {name} 原字節不符 {off:#x}：{bytes(IMG[off:off + len(o)]).hex()}'
 # 鍵頁下標固定；鍵頁內容由裝載器寫入“實際鍵號 × 8”。
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
 KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504}   # KRES*：分辨率參數位；KASPECT：畫面寬高比上限（見 PARAMS） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap (see PARAMS)
@@ -1064,6 +1085,9 @@ with open(P('sites.tsv'), 'w') as f:
 with open(P('cuts.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, ob, nb, why, scope in cuts: f.write(f'{off:#x}\t{ob}\t{nb}\t{scope}\t{why}\n')   # 列：偏移 原字節 新字節 作用域 理由 | Columns: offset, original bytes, new bytes, scope, reason
+with open(P('options.tsv'), 'w') as f:
+    f.write(f'# BUILD_ID\t{BUILD_ID}\n')
+    for name, off, ob, nb, why in options: f.write(f'{name}\t{off:#x}\t{ob}\t{nb}\t{why}\n')   # 列：選項 偏移 原字節 新字節 理由 | Columns: option, offset, original bytes, new bytes, reason
 with open(P('params.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for oa, wa, ob_, wb, r, key, why in params: f.write(f'{oa:#x}\t{ob_:#x}\tx{r}\t{key}\t{why}\n')
