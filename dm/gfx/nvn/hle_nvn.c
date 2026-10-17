@@ -1662,4 +1662,22 @@ static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r
     mtl_tex_cpu_written(t);
 }
 NVN(nvnTextureWriteTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r, const void *src) { write_texels(CTX(t), (const view_t *)v, r, src, 0, 0); }
+// 影片解碼器的原生貼圖輸出（DecoderMode 2，hle_movie.c）：整幀寫進客戶端貼圖第 0 級，同 WriteTexels；返回貼圖格式，對象不是貼圖返回 −1
+// The movie decoder's native-texture output (DecoderMode 2, hle_movie.c): a whole frame into level 0 of the client texture, as WriteTexels does; returns the texture format, or −1 when the object is not a texture
+int nvn_host_write_texture(const void *nvntex, const void *src, int w, int h, size_t row, int *tw, int *th) {
+    const tex_t *t = nvntex;
+    uint32_t mg = 0; vm_size_t got = 0;   // 客戶端給的值未必是指針：先試讀 | the value the client gives is not necessarily a pointer: test-read first
+    if (!t || (uintptr_t)t & 7 || vm_read_overwrite(mach_task_self(), (vm_address_t)t, 4, (vm_address_t)&mg, &got) != KERN_SUCCESS || got != 4) return -1;
+    if (t->magic != MAGIC('T', 'E', 'X', 0)) return -1;
+    if (tw) *tw = (int)t->d.width;
+    if (th) *th = (int)t->d.height;
+    if (src) { NVNcopyRegion r = {0, 0, 0, w, h, 1}; write_texels(t, NULL, &r, src, row, 0); }
+    return (int)t->d.format;
+}
+// 宿主在 CPU 上做完的活：同步對象直接算已發信號（柵欄 0 恆已完成） | work the host finished on the CPU: the sync object counts as signalled at once (fence 0 is always complete)
+int nvn_host_signal_sync(void *nvnsync) {
+    sync_t *o = nvnsync;
+    if (!o || o->magic != MAGIC('S', 'Y', 'N', 'C')) return -1;
+    o->fence = 0; o->fenced = 1; return 0;
+}
 NVN(nvnTextureFlushTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r) { (void)t; (void)v; (void)r; }   // 統一內存 + 髒頁跟蹤：無需刷 | unified memory + dirty page tracking: nothing to flush

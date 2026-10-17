@@ -11,10 +11,12 @@
 #include "vpx/vpx_decoder.h"
 #include "vpx/vp8dx.h"
 
+#if 0
 HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "影片拆封裝：宿主還不放影片，開片失敗（0x1000）", int, h_movie_SetSource, void *self, const char *path) {
     (void)self; static int red; if (!red++) LOG("【紅】影片：宿主不拆封裝，開片報失敗（首個 %s）", path ? path : "(null)");
     return 0x1000;
 }
+#endif
 
 
 // ---------- 解碼器 | Decoder ----------
@@ -45,12 +47,14 @@ HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "影片拆封裝：宿主還
 #define MD_NO_INPUT 0x1011       // SDK：沒有空輸入 | SDK: no free input
 #define MD_NO_OUTPUT 0x100e      // SDK：沒有就緒輸出 | SDK: no output ready
 #define MD_FMT_NV12 4
+#define MD_FMT_ABGR 3            // 4 字節 RGBA（內存序 R G B A），只配原生貼圖模式 | 4-byte RGBA (memory order R G B A), only with the native texture mode
+#define MD_MODE_TEX 2            // 原生貼圖模式：解碼器把幀寫進客戶端的 NVN 貼圖 | native texture mode: the decoder writes frames into the client's NVN texture
 #define MD_TYPE_VP9 3
 
 typedef struct {
     pthread_mutex_t mu;                          // 護下面的隊列與槽 | guards the queues and slots below
     int type, fmt, mode;
-    void **ev;                                   // DecoderEvents*：{輸入, 輸出, 格式, 出錯} 的 EventType* | {input, output, format, error} EventType*
+    void *ev[4];                                 // DecoderEvents 的副本：{輸入, 輸出, 格式, 出錯} 的 EventType*。客戶端的結構不一定常駐（銀河戰士 生存恐懼第二段影片時已被改寫，Start 發信號崩），登記時抄下 | a copy of DecoderEvents: {input, output, format, error} EventType*. The client's struct need not stay alive (by Metroid Dread's second movie it had been overwritten and Start crashed signalling), so it is copied at registration
     int w, h, fmt_sent, started;
     uint8_t *in[MD_NIN]; int infree[MD_NIN], ninfree;                     // 空輸入號隊列 | queue of free input indices
     struct { int used, pic; int64_t pts; uint32_t flags; uint8_t *frm; size_t cap; } out[MD_NOUT];   // pic：frm 裡有解出的畫面；cap：frm 的字節數 | pic: frm holds a decoded picture; cap: bytes in frm
@@ -74,6 +78,7 @@ static struct {
     void (*set_i32)(void *md, const char *k, int v);
     void (*set_rect)(void *md, const char *k, int l, int t, int r, int b);
     int (*find_i32)(const void *md, const char *k, int *v);
+    void *(*nvn_sync)(const void *buf);   // 只有原生貼圖模式用；Engage 的 subsdk0 也有，但不強求 | used only by the native texture mode; Engage's subsdk0 has it too, but it is not required
 } G;
 
 static void *msym(const char *n) { void *p = guest_sym(n); if (!p) die("影片：缺 SDK 符號 %s", n); return p; }
@@ -89,7 +94,48 @@ static void md_syms(void) {
     G.signal = msym("_ZN2nn2os11SignalEventEPNS0_9EventTypeE");
 }
 static mdec_t *md_of(void **self) { return self ? (mdec_t *)self[1] : NULL; }
-static void md_event(mdec_t *d, int i) { if (d->ev && d->ev[i]) G.signal(d->ev[i]); }   // 0 輸入 1 輸出 2 格式 3 出錯 | 0 input 1 output 2 format 3 error
+static void md_event(mdec_t *d, int i) { if (d->ev[i]) G.signal(d->ev[i]); }   // 0 輸入 1 輸出 2 格式 3 出錯 | 0 input 1 output 2 format 3 error
+// 延後發的事件：Start / Flush 之後的「有輸入」。SDK 的解碼器從自己的編解碼線程異步發它；銀河戰士 生存恐懼在 RegisterClientEvents 之前就 InitializeMultiWaitHolder，
+// 之後才把等待項掛進自己的 MultiWait。Start 裡同步發信號時等待項還沒掛上，SignalEvent 進 MultiWaitImpl::NotifyAndWakeupThread 用空的 MultiWait（0x20）崩
+// （同一塊內存第二次建解碼器時才出現）。改由一條客體線程約 2 ms 後發（SignalEvent 是客體代碼，要在客體線程上調）；析構時在同一把鎖下撤銷該解碼器的待發項。
+// 這次崩潰與工作線程在 main+0x225338 的崩潰，根子都是宿主沒有同核搶佔（真機上遊戲的分發、工作線程會搶佔主線程）；hle_thread.c 現已近似實現（svc_thread、dm_yield_to_core_peers）
+// Deferred events: "input available" after Start / Flush. The SDK's decoder signals it asynchronously from its own codec thread; Metroid Dread calls InitializeMultiWaitHolder before RegisterClientEvents
+// and only later links the holders into its MultiWait. Signalled synchronously inside Start, the holders were not linked yet and SignalEvent crashed in MultiWaitImpl::NotifyAndWakeupThread on a null MultiWait (0x20)
+// (it showed only when a decoder was built a second time in the same memory). A guest thread now signals it about 2 ms later (SignalEvent is guest code and must be called on a guest thread); the destructor drops that decoder's pending signals under the same lock.
+// The root of that crash and of the worker crash at main+0x225338 was missing same-core preemption (the game's dispatcher and worker preempt the main thread on hardware); hle_thread.c now approximates it (svc_thread, dm_yield_to_core_peers)
+void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t stack_size);
+static pthread_mutex_t g_dfmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_dfcv = PTHREAD_COND_INITIALIZER;
+static struct { void *d; int ev; uint64_t due; } g_dfq[64]; static int g_ndfq, g_dfthr;
+static void md_defer_body(void *arg);
+static void md_defer(void *d, int ev) {
+    pthread_mutex_lock(&g_dfmu);
+    if (!g_dfthr) { g_dfthr = 1; dm_guest_thread_spawn(md_defer_body, NULL, 16, 64 << 10); }
+    if (g_ndfq < 64) g_dfq[g_ndfq++] = (__typeof__(g_dfq[0])){d, ev, now_ns() + 2000000};
+    else LOG("【紅】影片：延後事件隊列滿，丟一個");
+    pthread_cond_signal(&g_dfcv); pthread_mutex_unlock(&g_dfmu);
+}
+static void md_defer_drop(void *d) {
+    pthread_mutex_lock(&g_dfmu);
+    int n = 0; for (int i = 0; i < g_ndfq; i++) if (g_dfq[i].d != d) g_dfq[n++] = g_dfq[i];
+    g_ndfq = n; pthread_mutex_unlock(&g_dfmu);
+}
+// 持鎖發信號：析構先在此鎖下撤銷待發項，所以發信號與析構不會交錯 | signal under the lock: the destructor first drops pending entries under it, so a signal never interleaves with destruction
+static void md_defer_body(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&g_dfmu);
+    for (;;) {
+        uint64_t now = now_ns(), next = 0; int k = -1;
+        for (int i = 0; i < g_ndfq && k < 0; i++) { if (g_dfq[i].due <= now) k = i; else if (!next || g_dfq[i].due < next) next = g_dfq[i].due; }
+        if (k >= 0) {
+            mdec_t *d = g_dfq[k].d; int e = g_dfq[k].ev;
+            memmove(g_dfq + k, g_dfq + k + 1, (size_t)(--g_ndfq - k) * sizeof *g_dfq);
+            if (d->started) md_event(d, e);   // 停止後不發：遊戲在 Stop 之後就拆事件（Flush 後 2 ms 內 Stop 時，延後的信號打進正在拆的事件崩） | not after Stop: the game takes its events apart right after Stop (a Stop within 2 ms of a Flush let the deferred signal hit events being torn down)
+            continue;
+        }
+        if (!next) pthread_cond_wait(&g_dfcv, &g_dfmu);
+        else { uint64_t w = next - now; struct timespec ts = { (time_t)(w / 1000000000u), (long)(w % 1000000000u) }; pthread_cond_timedwait_relative_np(&g_dfcv, &g_dfmu, &ts); }
+    }
+}
 // 前 12 次逐條記，之後每 2^k 次記一次 | log the first 12 calls one by one, then every 2^k-th
 #define MD_TRACE(d, slot, ...) do { unsigned long n_ = ++(d)->ncall[slot]; if (n_ <= 12 || !(n_ & (n_ - 1))) LOG("[影片] " __VA_ARGS__); } while (0)
 
@@ -134,6 +180,27 @@ static void md_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
         for (; x < cw2 && 2 * x + 1 < w; x++) { o[2 * x] = u[x]; o[2 * x + 1] = v[x]; }
     }
 }
+// I420 → RGBA（原生貼圖模式）：按畫面標的色彩空間與範圍（VP9 色彩配置；未標時 720 行以上按 BT.709，以下 BT.601），16 位定點；圖比槽小的部分補黑，大的裁掉
+// I420 → RGBA (native texture mode): by the colour space and range the picture declares (VP9 colour config; when undeclared BT.709 from 720 lines up, else BT.601), 16-bit fixed point; a smaller picture is padded with black, a larger one cropped
+static void md_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
+    int full = im->range == VPX_CR_FULL_RANGE, b709 = im->cs == VPX_CS_BT_709 || (im->cs == VPX_CS_UNKNOWN && h >= 720);
+    double ky = full ? 1.0 : 255.0 / 219.0, kc = full ? 1.0 : 255.0 / 224.0;
+    double rv = b709 ? 1.5748 : 1.402, gu = b709 ? 0.1873 : 0.3441, gv = b709 ? 0.4681 : 0.7141, bu = b709 ? 1.8556 : 1.772;
+    int Y = (int)(ky * 65536), RV = (int)(rv * kc * 65536), GU = (int)(gu * kc * 65536), GV = (int)(gv * kc * 65536), BU = (int)(bu * kc * 65536), y0 = full ? 0 : 16;
+    int cw = (int)im->d_w < w ? (int)im->d_w : w, ch = (int)im->d_h < h ? (int)im->d_h : h;
+    if (cw < w || ch < h) for (size_t i = 0; i < (size_t)w * h; i++) ((uint32_t *)dst)[i] = 0xff000000u;
+    #define CL(v) ((v) < 0 ? 0 : (v) > 255 ? 255 : (v))
+    for (int y = 0; y < ch; y++) {
+        const uint8_t *py = im->planes[0] + (size_t)y * im->stride[0], *pu = im->planes[1] + (size_t)(y >> 1) * im->stride[1], *pv = im->planes[2] + (size_t)(y >> 1) * im->stride[2];
+        uint8_t *o = dst + (size_t)y * w * 4;
+        for (int x = 0; x < cw; x++) {
+            int l = (py[x] - y0) * Y, u = pu[x >> 1] - 128, v = pv[x >> 1] - 128;
+            int r = (l + RV * v + 32768) >> 16, g = (l - GU * u - GV * v + 32768) >> 16, b = (l + BU * u + 32768) >> 16;
+            o[4 * x] = (uint8_t)CL(r); o[4 * x + 1] = (uint8_t)CL(g); o[4 * x + 2] = (uint8_t)CL(b); o[4 * x + 3] = 255;
+        }
+    }
+    #undef CL
+}
 // 解一包進輸出槽 slot：1 = 出了一幀，0 = 沒出（隱藏幀或出錯） | decode one packet into output slot slot: 1 = a picture came out, 0 = none (hidden frame or error)
 static int md_vp9(mdec_t *d, const uint8_t *p, int n, int slot) {
     if (!d->vpx_on) {
@@ -153,9 +220,10 @@ static int md_vp9(mdec_t *d, const uint8_t *p, int n, int slot) {
     if (!last) return 0;
     if (last->fmt != VPX_IMG_FMT_I420) { if (!d->red_img++) LOG("【紅】影片：VP9 畫面格式 %#x 不是 I420（4:2:0 8 位），出黑幀", last->fmt); return 0; }
     if ((int)last->d_w != d->w || (int)last->d_h != d->h) { if (!d->red_img++) LOG("【紅】影片：VP9 畫面 %u×%u 與輸出 %d×%d 不符（首例），裁剪 / 補黑", last->d_w, last->d_h, d->w, d->h); }
-    size_t need = (size_t)d->w * d->h * 3 / 2;
+    int rgba = d->fmt == MD_FMT_ABGR;
+    size_t need = (size_t)d->w * d->h * (rgba ? 4 : 3) / (rgba ? 1 : 2);
     if (d->out[slot].cap < need) { free(d->out[slot].frm); d->out[slot].frm = malloc(need); d->out[slot].cap = need; }   // Reset 後再 Configure 可能換了尺寸 | a Configure after Reset may change the size
-    md_nv12(last, d->out[slot].frm, d->w, d->h);
+    if (rgba) md_rgba(last, d->out[slot].frm, d->w, d->h); else md_nv12(last, d->out[slot].frm, d->w, d->h);
     return 1;
 }
 static void md_close(mdec_t *d) { if (d->vpx_on) { vpx_codec_destroy(&d->vpx); d->vpx_on = 0; } }
@@ -219,9 +287,11 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
     static void *vt; if (!vt) { uint8_t *t = guest_sym("_ZTVN5movie7DecoderE"); if (!t) die("影片：缺 movie::Decoder 的虛表"); vt = t + 0x10; }
     md_syms();
     self[0] = vt; self[1] = NULL;
-    // 只做視頻（AVC / VP8 / VP9 = 1..3）NV12 輸出；別的（音頻）impl 留空，各方法回 SDK 的失敗碼。只有 VP9 真解碼，AVC / VP8 出黑幀
-    // Only video (AVC / VP8 / VP9 = 1..3) with NV12 output; anything else (audio) keeps a null impl and every method returns the SDK's failure code. Only VP9 is really decoded; AVC / VP8 give black frames
-    if (type < 1 || type > 3 || fmt != MD_FMT_NV12) { LOG("【紅】影片：解碼器類型 %d 輸出 %d 模式 %d 宿主不支持，各方法回失敗", type, fmt, mode); return; }
+    // 只做視頻（AVC / VP8 / VP9 = 1..3）：NV12 輸出（Engage 的 Unity，CPU 緩衝），或 RGBA 輸出進客戶端 NVN 貼圖（模式 2，銀河戰士 生存恐懼）；
+    // 別的（音頻）impl 留空，各方法回 SDK 的失敗碼。只有 VP9 真解碼，AVC / VP8 出黑幀
+    // Only video (AVC / VP8 / VP9 = 1..3): NV12 output (Engage's Unity, CPU buffers), or RGBA output into the client's NVN texture (mode 2, Metroid Dread);
+    // anything else (audio) keeps a null impl and every method returns the SDK's failure code. Only VP9 is really decoded; AVC / VP8 give black frames
+    if (type < 1 || type > 3 || (fmt != MD_FMT_NV12 && !(fmt == MD_FMT_ABGR && mode == MD_MODE_TEX))) { LOG("【紅】影片：解碼器類型 %d 輸出 %d 模式 %d 宿主不支持，各方法回失敗", type, fmt, mode); return; }
     if (type != MD_TYPE_VP9) LOG("【紅】影片：解碼器類型 %d（AVC / VP8）宿主不解碼，出黑幀", type);
     mdec_t *d = calloc(1, sizeof *d);
     pthread_mutex_init(&d->mu, NULL); pthread_mutex_init(&d->dmu, NULL); pthread_mutex_init(&d->wmu, NULL); pthread_cond_init(&d->wcv, NULL);
@@ -236,6 +306,7 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
 }
 static void md_free(void **self) {
     mdec_t *d = md_of(self); if (!d) return;
+    md_defer_drop(d);
     self[1] = NULL;
     LOG("[影片] 解碼器 %p 析構：送入 %lu 包，取出 %lu 幀；VP9 解 %llu 包，每包均 %.2f ms、最長 %.2f ms", (void *)self, d->ncall[7], d->ncall[8],
         (unsigned long long)d->dec_n, d->dec_n ? d->dec_ns / 1e6 / d->dec_n : 0.0, d->dec_max / 1e6);
@@ -246,6 +317,8 @@ static void md_free(void **self) {
     pthread_mutex_destroy(&d->mu); pthread_mutex_destroy(&d->dmu); pthread_mutex_destroy(&d->wmu); pthread_cond_destroy(&d->wcv); free(d);
 }
 HLE_FORCE("_ZN5movie7DecoderD2Ev", "影片解碼器析構：釋放宿主對象", void, h_movie_DecD2, void **self) { md_free(self); }
+// 完整對象析構（D1）：銀河戰士 生存恐懼直接調它（main+0x225a08）；沒接管時 SDK 把宿主對象當 DecoderImpl 析構而崩 | complete-object destructor (D1): Metroid Dread calls it directly (main+0x225a08); without the take-over the SDK destroys the host object as a DecoderImpl and crashes
+HLE_FORCE("_ZN5movie7DecoderD1Ev", "影片解碼器析構（完整對象）：釋放宿主對象", void, h_movie_DecD1, void **self) { md_free(self); }
 // 刪除式析構：Unity 用自己的分配器建對象、先調 D2 再自己釋放，這裡不釋放對象本身 | deleting destructor: Unity allocates the object with its own allocator, calls D2 and frees it itself; the object itself is not freed here
 HLE_FORCE("_ZN5movie7DecoderD0Ev", "影片解碼器刪除式析構：釋放宿主對象", void, h_movie_DecD0, void **self) { LOG("【紅】影片：刪除式析構（對象本身未釋放）"); md_free(self); }
 
@@ -258,14 +331,15 @@ HLE_FORCE("_ZN5movie7Decoder9ConfigureEPNS_9MediaDataE", "影片解碼器配置"
 }
 HLE_FORCE("_ZN5movie7Decoder20RegisterClientEventsEPNS_13DecoderEventsE", "影片解碼器：登記客戶端事件", int, h_movie_RegEv, void **self, void **ev) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
-    d->ev = ev; MD_TRACE(d, 1, "RegisterClientEvents：%p %p %p %p", ev ? ev[0] : 0, ev ? ev[1] : 0, ev ? ev[2] : 0, ev ? ev[3] : 0);
+    for (int i = 0; i < 4; i++) d->ev[i] = ev ? ev[i] : NULL;
+    MD_TRACE(d, 1, "RegisterClientEvents：%p %p %p %p", ev ? ev[0] : 0, ev ? ev[1] : 0, ev ? ev[2] : 0, ev ? ev[3] : 0);
     return 0;
 }
 HLE_FORCE("_ZN5movie7Decoder5StartEv", "影片解碼器開始：輸入全空，通知客戶端", int, h_movie_Start, void **self) {
     mdec_t *d = md_of(self); if (!d) return 0x2002;
     pthread_mutex_lock(&d->mu); d->started = 1; pthread_mutex_unlock(&d->mu);
     MD_TRACE(d, 2, "Start");
-    md_event(d, 0);
+    md_defer(d, 0);
     return 0;
 }
 // 清空隊列與槽；close 時連 libvpx 解碼器也關掉（下一包重建） | clear the queues and slots; with close, the libvpx decoder is closed too (rebuilt at the next packet)
@@ -281,23 +355,33 @@ static void md_reset(mdec_t *d, int close) {
 }
 HLE_FORCE("_ZN5movie7Decoder4StopEv", "影片解碼器停止", int, h_movie_Stop, void **self) {
     mdec_t *d = md_of(self); if (!d) return 0x2003;
-    MD_TRACE(d, 3, "Stop"); md_reset(d, 1); d->started = 0; return 0;
+    MD_TRACE(d, 3, "Stop");
+    pthread_mutex_lock(&g_dfmu); pthread_mutex_lock(&d->mu); d->started = 0; pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&g_dfmu);   // 延後線程持 g_dfmu 發信號：拿到它即保證此後不再發 | the deferred thread signals holding g_dfmu: taking it guarantees no signal afterwards
+    md_defer_drop(d);
+    md_reset(d, 1); return 0;
 }
 HLE_FORCE("_ZN5movie7Decoder5ResetEv", "影片解碼器復位", int, h_movie_Reset, void **self) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     MD_TRACE(d, 4, "Reset"); md_reset(d, 1); d->fmt_sent = 0; return 0;
 }
-// 清空：輸入輸出都還回去，libvpx 保留（跳轉後的下一包是關鍵幀） | flush: inputs and outputs all go back; libvpx is kept (the next packet after a seek is a key frame)
+// 清空：輸入輸出都還回去，libvpx 保留（跳轉後的下一包是關鍵幀）。不發「有輸入」：同 MediaCodec，清空後要等再 Start 才通知。
+// 銀河戰士 生存恐懼片尾是 Flush、Flush、Stop、析構，清空時發的信號讓「有輸入」處理把包裝對象投進消息隊列，對象隨即析構，工作線程讀到已釋放對象崩；循環播放時它 Flush 後會再 Start
+// flush: inputs and outputs all go back; libvpx is kept (the next packet after a seek is a key frame). No "input available": as with MediaCodec, nothing is announced after a flush until the next Start.
+// Metroid Dread ends a movie with Flush, Flush, Stop, destroy; a signal raised at the flush let its "input available" handler post the wrapper object to the message queue, the object was destroyed right after, and the worker thread read the freed object; when looping it calls Start after the Flush
 HLE_FORCE("_ZN5movie7Decoder5FlushEv", "影片解碼器清空：輸入輸出都還回去", int, h_movie_Flush, void **self) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
-    MD_TRACE(d, 5, "Flush"); md_reset(d, 0); md_event(d, 0); return 0;
+    MD_TRACE(d, 5, "Flush"); md_defer_drop(d); md_reset(d, 0); return 0;
 }
 HLE_FORCE("_ZN5movie7Decoder23AcquireInputBufferIndexEPiS1_", "影片解碼器：取空輸入號", int, h_movie_AcqIn, void **self, int *idx, int *left) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (!idx || !left) return 0x100b;
+    // 停止後不再給輸入號（同 MediaCodec）：銀河戰士 生存恐懼 的「有輸入」處理（main+0x222f14）取到號就把解碼器包裝對象投進播放管理器的消息隊列；
+    // Stop 把輸入號全還回來後，一個遲到的輸入事件仍能取到號，包裝對象隨後析構，工作線程（main+0x223bd4）讀到已釋放的對象崩
+    // No input indices after Stop (as with MediaCodec): Metroid Dread's "input available" handler (main+0x222f14) posts the decoder wrapper object to the player manager's message queue once it gets an index;
+    // after Stop returned every input index, a late input event could still get one, the wrapper was destroyed afterwards, and the worker thread (main+0x223bd4) read the freed object and crashed
     pthread_mutex_lock(&d->mu);
     int r = MD_NO_INPUT; *idx = -1; *left = 0;
-    if (d->ninfree) { *idx = d->infree[0]; memmove(d->infree, d->infree + 1, --d->ninfree * sizeof *d->infree); *left = d->ninfree; r = 0; }
+    if (d->ninfree && d->started) { *idx = d->infree[0]; memmove(d->infree, d->infree + 1, --d->ninfree * sizeof *d->infree); *left = d->ninfree; r = 0; }
     pthread_mutex_unlock(&d->mu);
     MD_TRACE(d, 6, "AcquireInputBufferIndex → %#x 號 %d 餘 %d", r, *idx, *left);
     return r;
@@ -331,7 +415,7 @@ HLE_FORCE("_ZN5movie7Decoder24AcquireOutputBufferIndexEPiPlPjS1_", "影片解碼
     if (!idx || !pts || !flags || !left) return 0x100b;
     pthread_mutex_lock(&d->mu);
     int r = MD_NO_OUTPUT; *idx = -1; *left = 0;
-    if (d->noutq) {
+    if (d->noutq && d->started) {
         int s = d->outq[0]; memmove(d->outq, d->outq + 1, --d->noutq * sizeof *d->outq);
         *idx = s; *pts = d->out[s].pts; *flags = d->out[s].flags; *left = d->noutq; r = 0;
     }
@@ -368,9 +452,34 @@ HLE_FORCE("_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_", "影片解碼器：輸
 }
 // 把一幀寫進客戶端緩衝：解出的畫面，沒有畫面（流結束包、AVC / VP8）時是黑幀（視頻範圍 Y 16、UV 128）
 // Write one frame into the client buffer: the decoded picture, or a black frame (video range Y 16, UV 128) when there is none (end-of-stream packet, AVC / VP8)
+// 原生貼圖模式：客戶端 Buffer 的數據指針就是 NVNtexture 對象本身（容量寫 8；銀河戰士 生存恐懼 main+0x226c98：貼圖池項 +0x18 處內嵌的貼圖對象），外加 NVN 設備與同步對象（SetNvnDev / SetNvnSync）。
+// SDK 裡由 NnCodecConsumer 用 GPU 把解出的幀畫進這張貼圖、完成時發同步對象；宿主在 CPU 上寫貼圖存儲（同 WriteTexels，回放層按髒頁重傳），寫完同步對象即算完成
+// Native texture mode: the client Buffer's data pointer is the NVNtexture object itself (capacity given as 8; Metroid Dread main+0x226c98: the texture object embedded at +0x18 of a texture pool entry), plus the NVN device and a sync object (SetNvnDev / SetNvnSync).
+// In the SDK, NnCodecConsumer draws the decoded frame into that texture on the GPU and signals the sync when done; the host writes the texture storage on the CPU (as WriteTexels; the replay layer re-uploads dirty pages), and the sync counts as done once written
+int nvn_host_write_texture(const void *nvntex, const void *src, int w, int h, size_t row, int *tw, int *th);
+int nvn_host_signal_sync(void *nvnsync);
+static int md_out_tex(mdec_t *d, int i, void *buf) {
+    if (!G.nvn_sync) G.nvn_sync = msym("_ZNK5movie6Buffer10GetNvnSyncEv");
+    uint8_t *p = G.data(buf); size_t cap = G.cap(buf);
+    if (!p || cap < 8) { LOG("【紅】影片：原生貼圖模式的客戶端緩衝 %zu 字節，要 8（貼圖對象）", cap); return 0x100b; }
+    void *tex = p; int tw = 0, th = 0, f = nvn_host_write_texture(tex, NULL, 0, 0, 0, &tw, &th);
+    if (f < 0) { LOG("【紅】影片：原生貼圖模式的緩衝數據 %p 不是貼圖對象", tex); return 0x100b; }
+    if (f != 0x25 && f != 0x38 && f != 0x6d && f != 0x37 && !d->red_img++) LOG("【紅】影片：客戶端貼圖格式 %#x 不是 RGBA8 / RGBX8（含 sRGB），按 RGBA 字節序寫", f);   // 銀河戰士 生存恐懼：RGBX8_SRGB | Metroid Dread: RGBX8_SRGB
+    int w = d->w < tw ? d->w : tw, h = d->h < th ? d->h : th;
+    if (d->out[i].pic && d->out[i].frm) nvn_host_write_texture(tex, d->out[i].frm, w, h, (size_t)d->w * 4, NULL, NULL);
+    else {   // 沒有畫面：黑幀 | no picture: a black frame
+        size_t n = (size_t)tw * th; uint32_t *k = malloc(n * 4); if (!k) die("影片：黑幀分配失敗");
+        for (size_t j = 0; j < n; j++) k[j] = 0xff000000u;
+        nvn_host_write_texture(tex, k, tw, th, (size_t)tw * 4, NULL, NULL); free(k);
+    }
+    void *sy = G.nvn_sync(buf); if (sy && nvn_host_signal_sync(sy) && !d->red_dec++) LOG("【紅】影片：緩衝帶的同步對象 %p 不是 NVNsync", sy);
+    MD_TRACE(d, 12, "GetOutputBuffer 號 %d → 貼圖 %p（%d×%d 格式 %#x）%s", i, tex, tw, th, f, d->out[i].pic ? "" : "（黑幀）");
+    return 0;
+}
 HLE_FORCE("_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE", "影片解碼器：取一幀", int, h_movie_GetOut, void **self, int i, void *buf) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (!buf || i < 0 || i >= MD_NOUT) return 0x100b;
+    if (d->mode == MD_MODE_TEX) return md_out_tex(d, i, buf);
     int w, h, stride, slice; md_dims(d, &w, &h, &stride, &slice);
     size_t need = (size_t)stride * slice * 3 / 2, cap = G.cap(buf);
     uint8_t *p = G.data(buf);
