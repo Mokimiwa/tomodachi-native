@@ -1054,13 +1054,19 @@ if BUILD_ID in ASPECT:
 # ---- 世界點 → 界面位置（僅宿主）：{NSO 構建號: [(偏移, 原指令字, 投影寄存器)]}。0x352670(相機坐標, 投影, 半屏尺寸) 用 3D 投影矩陣算出歸一化坐標，
 # 乘半屏尺寸得界面坐標（Mii 頭上「A 對話」這類提示；調用方：房間的提示 0x35087c、通用的世界點 → 界面 0x2172190）。界面畫在置中 16:9 帶裡時（回放 ui_band），
 # 投影已按輸出比例放寬 / 加高，這個坐標就要再乘帶的縮放（寬：x × 寬 / 帶寬；高：y × 高 / 帶高），提示才落在物體上。
-# 跳板掛在調用方用結果的那一條：投影的寬高比 = KRESF 寬 / 高（就是被換過的投影）且 KBAND 不為 0（界面帶開著）時，s0 乘 KBAND 低 32 位、s1 乘高 32 位；
-# 只用 x16 / x17 與 s3–s5（調用之後都是死的）。界面帶關著或 16:9 時 KBAND = 0，結果與原指令相同 ----
+# 跳板掛在調用方用結果的那一條：投影的寬高比 = KRESF 寬 / 高（就是被換過的投影）且 KBAND 不為 0（界面帶開著）時，s0 乘 KBAND 低 32 位（橫向）；
+# 只用 x16 / x17 與 s3 / s4（調用之後都是死的）。界面帶關著或 16:9 時 KBAND = 0，結果與原指令相同。
+# 縱向（高的輸出，KBAND 高 32 位）不乘：房間教學「將指形游標對準對話框」的游標由遊戲另一條沒找到的換算（直接讀投影矩陣）按未縮放的縱坐標放，
+# 命中判定拿它比畫出來的泡泡，縱向乘了就對不上、這一步過不去。房間相機每幀在 0x261aa0 重寫 fovy，蓋掉 ASPECT 的 Hor+，所以房間在高的畫面上是 Vert-；
+# 試過在那裡也乘 Hor+，游標照樣對不上，所以沒加。代價：高的畫面上泡泡離中心近了 (16/9) ÷ 比例 倍，與 e3b9803 之前一樣 ----
 # ---- World point → UI position (host only): {NSO build ID: [(offset, original instruction word, projection register)]}. 0x352670(camera position, projection, half screen size) computes normalized coordinates with the 3D projection matrix
 # and multiplies by the half screen size to get UI coordinates (markers such as "A 對話" over a Mii; callers: the room marker 0x35087c and the generic world point → UI helper 0x2172190). When the UI is drawn in a centred 16:9 band (replay ui_band),
 # the projection has already been widened / heightened for the output, so these coordinates need the band's scale too (wide: x × width / band width; tall: y × height / band height) for the marker to sit on the object.
-# The trampoline sits on the instruction where the caller uses the result: when the projection's aspect = KRESF width / height (a replaced projection) and KBAND is not 0 (UI band on), s0 is multiplied by the low 32 bits of KBAND and s1 by the high 32 bits;
-# it uses only x16 / x17 and s3–s5 (all dead after the call). With the UI band off or a 16:9 output KBAND = 0 and the result equals the original instruction ----
+# The trampoline sits on the instruction where the caller uses the result: when the projection's aspect = KRESF width / height (a replaced projection) and KBAND is not 0 (UI band on), s0 is multiplied by the low 32 bits of KBAND (horizontal);
+# it uses only x16 / x17 and s3 / s4 (all dead after the call). With the UI band off or a 16:9 output KBAND = 0 and the result equals the original instruction.
+# The vertical scale (tall outputs, the high 32 bits of KBAND) is not applied: in the room tutorial step "aim the finger cursor at the speech bubble", the game places the cursor through another conversion (not found) using the unscaled vertical coordinate, and its hit test compares that with the drawn bubble,
+# so scaling y puts them out of line and the step cannot be passed. The room camera rewrites its fovy every frame at 0x261aa0, overriding ASPECT's Hor+, so the room is Vert- on tall pictures;
+# applying Hor+ there as well was tried and the cursor still did not line up, so it is left out. The cost: on tall pictures bubbles sit (16/9) ÷ ratio times closer to the centre, as before e3b9803 ----
 MARKER = {'56bf85bd535413464cb75bb6c2683b67': [(0x350fac, 0x2d2f07a0, 21), (0x21721e8, 0xa9434ff4, 20)]}
 for off, word, preg in MARKER.get(BUILD_ID, []):
     assert struct.unpack_from('<I', IMG, off)[0] == word, f'世界點 → 界面原指令不符 {off:#x}'
@@ -1074,15 +1080,14 @@ for off, word, preg in MARKER.get(BUILD_ID, []):
     skips.append(len(patch)); emit(0x54000001)          # b.ne 原指令 | b.ne original
     emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'KBAND'); emit(LDRX(16, 16))
     skips.append(len(patch)); emit(0xB4000010)          # cbz x16, 原指令 | cbz x16, original
-    emit(0x1E270204); emit(0xD360FE10); emit(0x1E270205)   # fmov s4, w16（kx）; lsr x16, x16, #32 ; fmov s5, w16（ky）
-    emit(0x1E240800); emit(0x1E250821)                   # fmul s0, s0, s4 ; fmul s1, s1, s5
+    emit(0x1E270204); emit(0x1E240800)                   # fmov s4, w16（kx）; fmul s0, s0, s4
     orig = here(); emit(word); emit(B(here(), off + 4))
     for k in skips:
         w_ = struct.unpack_from('<I', patch, k)[0]
         struct.pack_into('<I', patch, k, w_ | (((orig - (PATCH_OFF + k)) >> 2) & 0x7FFFF) << 5)
     put_branch(off, start); stat('marker')
     cuts.append((off, struct.pack('<I', word).hex(), struct.pack('<I', B(off, start)).hex(),
-                 '世界點 → 界面位置：投影是換過比例的那個且界面帶開著時，結果乘界面帶縮放 KBAND', '僅宿主'))
+                 '世界點 → 界面位置：投影是換過比例的那個且界面帶開著時，橫坐標乘界面帶的橫向縮放（KBAND 低 32 位）', '僅宿主'))
 
 # 既有三塊原生規則跳板均只使用後繼覆蓋的死臨時w8，不改w0/stat返回、sp或NZCV。
 # 6c6290位於原mode3門後；前方Blaze/引用計數與數據失效6c62dc分支、後方狀態更新不動。
