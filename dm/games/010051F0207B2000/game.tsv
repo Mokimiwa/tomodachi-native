@@ -73,3 +73,8 @@ render_tall_max	1350
 # 界面著色器的來源（shader_map.tsv 第 5 列前綴）：ui2d 內建、字型內建、各版面封存檔。不是 16:9 時界面畫進置中的 16:9 帶，不再拉伸
 # Sources of the UI shaders (column 5 prefixes in shader_map.tsv): ui2d built-ins, font built-ins and each layout archive. When not 16:9 the UI is drawn into a centred 16:9 band instead of being stretched
 ui_shaders	main#BNSH@0x363f000 main#BNSH@0x3637000 /Layout/
+# 其中頂點階段 cb0 前 4 行就是裁剪變換（行主序）的：ui2d 與字型內建（11 個頂點著色器都量過，x 只取第 0 行、y 只取第 1 行）。這些繪製不縮視口，改把第 0 行（寬）或第 1 行（高）
+# 乘帶的比例、視口照舊整個畫面：帶內像素不變，伸出 16:9 畫布的部分（例如 Mii 走到兩側時頭上的思考泡泡）照樣畫在兩側。版面封存檔的著色器佈局各異，仍縮視口
+# Of those, the ones whose vertex-stage cb0 starts with the 4-row clip transform (row-major): the ui2d and font built-ins (all 11 vertex shaders checked: x reads only row 0, y only row 1). These draws keep the whole-picture viewport
+# and get row 0 (wide) or row 1 (tall) multiplied by the band's ratio instead: pixels inside the band stay the same, and parts reaching past the 16:9 canvas (such as the thought bubble over a Mii that walked to the side) still show in the strips. Layout archive shaders vary in layout and keep the shrunken viewport
+ui_open_shaders	main#BNSH@0x363f000 main#BNSH@0x3637000
