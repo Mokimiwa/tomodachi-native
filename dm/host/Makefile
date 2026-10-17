@@ -15,7 +15,7 @@ CFLAGS=-O1 -g -Wall -Wno-unused-function
 export MACOSX_DEPLOYMENT_TARGET ?= 26.0
 # 服務層接管 hle_*.c 按通配納入：新增文件不改這一行（免合併衝突）
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m dm_bind.c memsnap.c ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m entry.S dm_i18n.c
+SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m dm_bind.c memsnap.c dm_aspect.c ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m entry.S dm_i18n.c
 # NVN 空設備 + nn::vi（dm/gfx/）
 # 按通配納入 dm/gfx 與 dm/gfx/nvn 下的源（tests/ metal/ 不進宿主）：新增文件不改這一行
 # NVN null device + nn::vi (dm/gfx/)
@@ -53,7 +53,7 @@ dm_bright_levels.inc: ../tools/gen_bright_levels.py ../ios/tools/touch_layout.py
 	python3 ../tools/gen_bright_levels.py "$(ROMFS)" > $@.tmp && mv $@.tmp $@
 .PHONY: game_profile
 game_profile: $(GAME_H)
-$(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py
+$(GAME_H): $(GAME_DIR)/game.tsv $(GAME_DIR)/shader_map.tsv ../games/game.py
 	python3 ../games/game.py header $(GAME) $@
 # 記下宿主是按哪個遊戲編的：換 GAME 時戳記內容變、宿主重編（否則 make 看 dmhost 比兩份表頭都新，照舊用另一個遊戲的宿主）。
 # 換遊戲時順手刪掉舊宿主：時間只精確到秒的盤上，戳記與上一個遊戲的 dmhost 可能同一秒，make 會當宿主已是最新
@@ -64,5 +64,5 @@ $(GAME_STAMP): FORCE
 	@mkdir -p gen; echo $(GAME) | cmp -s - $@ || { echo $(GAME) > $@; rm -f dmhost; }
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h dm_bind.h front.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
+dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h dm_bind.h front.h dm_aspect.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
 	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework AudioToolbox -framework ImageIO -framework UniformTypeIdentifiers

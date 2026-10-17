@@ -22,7 +22,9 @@
 //   and main+0x1d32cb0 then takes finger 0's position as the pointer. The script's finger used to be reported as 14, so the game received it but never switched modes and tapping a button did nothing.
 #include "dm.h"
 #include "front.h"
+#include "dm_uiscreen.h"
 #include <pthread.h>
+#include <math.h>
 enum { F_EMPTY, F_DOWN, F_LIFTED };
 static struct { int st, reported, again, hw; float x, y, ax, ay; } g_f[16];   // again/ax/ay：End 還沒報出去時同 id 又按下（下次讀先報 End 再報新 Start）；hw：報出去的 finger_id（reported 時有效） | again/ax/ay: the same id was pressed again before End went out (the next read reports End first, then the new Start); hw: the finger_id reported (valid while reported)
 static pthread_mutex_t g_tl = PTHREAD_MUTEX_INITIALIZER;
@@ -37,6 +39,18 @@ void dm_touch_set_range(const dm_touch *t, int n, uint32_t lo, uint32_t hi) {
     pthread_mutex_lock(&g_tl);
     int seen[16] = {0};
     if (hi > 16) hi = 16;
+    // 界面帶（nvn_mtl.m ui_band）：出圖比例不是 16:9 時界面畫在置中的 16:9 帶裡，觸點從整個畫面的歸一化坐標換到帶裡（帶外夾到帶邊），
+    // 遊戲照舊按 1280x720 面板讀。縮放取 dm_game_band（與世界點 → 界面的修正同一份）；出圖形狀啓動時就定了（dm_aspect.h），這裡讀一次
+    // UI band (nvn_mtl.m ui_band): when the output is not 16:9 the UI is drawn in a centred 16:9 band, so touch points are mapped from normalized whole-picture coordinates into the band (clamped to its edge outside it),
+    // and the game reads them as a 1280x720 panel as before. The scale comes from dm_game_band (the same one as the world point → UI correction); the output shape is fixed at launch (dm_aspect.h), so it is read once
+    static double bkx = -1, bky = 1;
+    if (bkx < 0) { uint64_t k = dm_game_band(); float x = 1, y = 1; if (k) { uint32_t a = (uint32_t)k, b = (uint32_t)(k >> 32); memcpy(&x, &a, 4); memcpy(&y, &b, 4); } bkx = x; bky = y; }
+    dm_touch tb[16];
+    if ((bkx != 1 || bky != 1) && n > 0 && n <= 16) {
+        for (int i = 0; i < n; i++) { tb[i] = t[i]; float x = (float)((t[i].x - 0.5) * bkx + 0.5), y = (float)((t[i].y - 0.5) * bky + 0.5);
+                                      tb[i].x = x < 0 ? 0 : x > 0.9999f ? 0.9999f : x; tb[i].y = y < 0 ? 0 : y > 0.9999f ? 0.9999f : y; }
+        t = tb;
+    }
     for (int i = 0; i < n; i++) {
         uint32_t id = t[i].id; if (id < lo || id >= hi) continue;
         seen[id] = 1;

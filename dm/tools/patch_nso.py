@@ -294,8 +294,8 @@ for name, off, ob, nb, why in options:   # 可選剪口只核不寫 | optional c
     assert len(o) == len(n) and IMG[off:off + len(o)] == o, f'可選剪口 {name} 原字節不符 {off:#x}：{bytes(IMG[off:off + len(o)]).hex()}'
 # 鍵頁下標固定；鍵頁內容由裝載器寫入“實際鍵號 × 8”。
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
-KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504}   # KRES*：分辨率參數位；KASPECT：畫面寬高比上限（見 PARAMS） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap (see PARAMS)
-KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI'))}
+KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504, 'KRESF': 503, 'KBAND': 502}   # KRES*：分辨率參數位；KASPECT：畫面寬高比上限；KRESF：主機模式輸出寬高的浮點（見 PARAMS）；KBAND：界面帶的縮放（見 MARKER） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap; KRESF: the docked output width and height as floats (see PARAMS); KBAND: the UI band's scale (see MARKER)
+KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI', 'KRESF', 'KBAND'))}
 
 md = Cs(CS_ARCH_ARM64, CS_MODE_ARM); md.detail = True
 patch = bytearray(); fix = []; gates = []; stats = {}
@@ -966,20 +966,123 @@ PARAMS = {'db0507f36b84200ac05f75d76ed5026f': [
     (0x1663ee8, '52838e49', 0x1663eec, '72a800e9', 9, 'KASPECTUI', '界面常量緩衝 0x15 號槽 [屏寬, 屏高, 寬高比上限]：界面精靈著色器按它在上限以外畫兩側黑柱（帶約 20–30 像素向內的柔邊，宿主另加餘量把柔邊推出屏幕）'),
     (0xb152bc, '52838e48', 0xb152c0, '72a800e8', 8, 'KASPECT', '新畫面模式視口：邊距 = (屏寬 − 屏高 × 上限) / 2，經 0x85bc90 設居中視口'),
     (0x23e888, '52838e48', 0x23e88c, '72a800e8', 8, 'KASPECT', '新畫面模式坐標鉗制（0x23e760）：x 夾進 [邊距, 邊距 + 屏高 × 上限]，寬屏兩側的指針 / 觸摸不再被夾回中間'),
-]}
+  ],
+  # 朋友收集 夢想生活 v0 main：寬屏。主機模式輸出 1920x1080 寫死在三處，都換成參數位（宿主缺省給原值，行為不變；寬屏時同高放寬，見 dm/host/dm_aspect.c）。
+  # 掌機那組 1280x720（0x8eee30）不動：它是遊戲的虛擬屏幕，相機寬高比、界面畫布、指針與觸屏都按它算。不改時界面按 16:9 畫、會隨輸出拉伸，
+  # 回放把它畫進置中的 16:9 帶（nvn_mtl.m ui_band）；改了界面畫布變寬，可遊戲裡寫死 1280x720 的屏幕坐標換算（小手的範圍、提示的位置）就錯位（實測）。
+  # 偏移 B 為 None 的是單條指令的浮點常數：跳板把參數位整個 64 位讀進 xR，指令只用低 32 位（KRESF 的低 32 位 = 寬的浮點位模式）。
+  # 寬高比另見下方 ASPECT（投影構造裡把 16:9 換成輸出寬高比）
+  # Tomodachi Life: Living the Dream v0 main: widescreen. The docked output 1920x1080 is hard-coded in three places, all replaced by parameter slots (the host gives the original values by default, so behaviour is unchanged; when wide it widens at the same height, see dm/host/dm_aspect.c).
+  # The handheld pair 1280x720 (0x8eee30) is left alone: it is the game's virtual screen, from which the camera aspect, the UI canvas, the pointer and touch are computed. Left alone the UI is drawn at 16:9 and would stretch with the output;
+  # the replay draws it into a centred 16:9 band instead (nvn_mtl.m ui_band). Widening it gives a wider UI canvas, but the game's hard-coded 1280x720 screen-space conversions (the hand's bounds, marker positions) then miss (measured).
+  # A row whose offset B is None is a single-instruction float constant: the trampoline loads the whole 64-bit slot into xR and the instruction only uses the low 32 bits (the low 32 bits of KRESF = the width's float bit pattern).
+  # For the aspect ratio see ASPECT below (16:9 replaced by the output aspect inside the projection constructor)
+  '56bf85bd535413464cb75bb6c2683b67': [
+    (0x8eee2c, 'd280f009', 0x8eee34, 'f2c08709', 9, 'KRES1', '框架配置：主機模式渲染尺寸 1920x1080（{u32 寬, u32 高} 存 [sp+0x150]，遊戲按它建主渲染目標）'),
+    (0x903710, 'd280f008', 0x903714, 'f2c08708', 8, 'KRES1', 'nnMain 顯示配置：交換鏈貼圖尺寸 1920x1080（WindowInitialize 前建的兩張出圖貼圖）'),
+    (0x46e93c, '52a89e09', None, None, 9, 'KRESF', '每幀出圖裁切 0x46e8dc：裁切寬 = 1920.0 × 動態分辨率比例（mov w9, #1920.0）'),
+    # 裁切高 1080.0 兩處（Switch 2 / 主機路徑 0x46e928 兼作除數，0x46ed70 是主機分支）：KRESF 的高 32 位。比例 = 主機高 / 這個高 = 1，掌機 = 720 / 高
+    # The crop height 1080.0 in two places (the Switch 2 / docked path 0x46e928, also the divisor, and the docked branch 0x46ed70): the high 32 bits of KRESF. The scale = docked height / this height = 1, handheld = 720 / height
+    (0x46e928, '52a890e8', None, None, 8, 'KRESF.hi', '每幀出圖裁切 0x46e8dc：裁切高與比例除數 1080.0（mov w8, #1080.0）'),
+    (0x46ed70, '52a890e8', None, None, 8, 'KRESF.hi', '每幀出圖裁切 0x46e8dc 主機分支：裁切高 1080.0（mov w8, #1080.0）'),
+  ],
+}
 params = PARAMS.get(BUILD_ID, [])
 for oa, wa, ob_, wb, r, key, why in params:
-    for o, w0 in ((oa, wa), (ob_, wb)):
+    for o, w0 in ((oa, wa), (ob_, wb)) if ob_ is not None else ((oa, wa),):
         w = struct.unpack_from('<I', IMG, o)[0]
         assert f'{w:08x}' == w0, f'參數位原指令不符 {o:#x}：{w:08x}'
         assert o not in kinds and not any(lo <= o < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'參數位與改寫點衝突 {o:#x}'
-    for o in range(oa + 4, ob_, 4):
+    for o in range(oa + 4, ob_ or oa, 4):
         ins = dis(struct.unpack_from('<I', IMG, o)[0], o)
         assert r not in regs_in(ins), f'參數位中間用到 x{r}：{o:#x} {ins.mnemonic} {ins.op_str}'
     start = here()
     tmp = 16 if r != 16 else 17
-    emit(STUR(tmp, 31, -16)); emit(MRS_TPIDRRO(r)); emit_slot_addr(r, tmp, key); emit(LDRX(r, r)); emit(LDUR(tmp, 31, -16)); emit(B(here(), oa + 4))
-    struct.pack_into('<I', IMG, oa, B(oa, start)); struct.pack_into('<I', IMG, ob_, NOP); stat('param')
+    slot, _, half = key.partition('.')   # 「鍵.hi」= 取參數位的高 32 位（lsr #32） | "key.hi" = take the high 32 bits of the slot (lsr #32)
+    emit(STUR(tmp, 31, -16)); emit(MRS_TPIDRRO(r)); emit_slot_addr(r, tmp, slot); emit(LDRX(r, r))
+    if half == 'hi': emit(0xD360FC00 | (r << 5) | r)   # lsr xR, xR, #32
+    else: assert not half, f'參數位鍵寫法不對：{key}'
+    emit(LDUR(tmp, 31, -16)); emit(B(here(), oa + 4))
+    struct.pack_into('<I', IMG, oa, B(oa, start))
+    if ob_ is not None: struct.pack_into('<I', IMG, ob_, NOP)
+    stat('param')
+
+# ---- 投影寬高比（僅宿主）：{NSO 構建號: (偏移, 原指令字, 主相機返回地址)}。透視投影構造函數裡 fmov s8, s3（s3 = 調用方給的寬高比）換成跳板：
+# 寬高比恰為 16:9（位模式 0x3fe38e39，1280/720 與常數 16/9 算出來都是它）時改成 KRESF 的 寬 / 高，其他比例（Mii 頭像等正方形、按視口算的）照原樣。
+# 跳板只用 x16 / x17（構造函數這時不用、隨後的 memset 調用也會改它們）與 s9（序言已存，0x8ce868 才寫）；參數位為 0（宿主沒給）時不改。
+# 16:9 輸出時寬 / 高 = 16:9，結果與原指令相同。
+# Hor+：輸出比 16:9 高（寬 / 高 < 16/9）且調用方是主相機（返回地址 = 第 3 項，主相機每幀在這裡重建投影）時，fovy（s2，0x8ce868 才拷走）乘 (16/9) ÷ 比例：
+# 橫向視野與 16:9 一樣、上下多看到一些；不乘就是縱向視野不變、左右變少。用 fovy·k 近似 2·atan(k·tan(fovy/2))（主相機 fovy 16°，誤差 < 1%，只影響視野大小、不影響比例） ----
+# ---- Projection aspect ratio (host only): {NSO build ID: (offset, original instruction word, main camera return address)}. In the perspective projection constructor, fmov s8, s3 (s3 = the aspect ratio the caller passes) becomes a trampoline:
+# when the aspect is exactly 16:9 (bit pattern 0x3fe38e39; both 1280/720 and the constant 16/9 produce it) it becomes KRESF width / height; other ratios (square ones such as Mii portraits, ones computed from a viewport) stay as they are.
+# The trampoline uses only x16 / x17 (unused by the constructor at this point, and the following memset call clobbers them anyway) and s9 (saved by the prologue, first written at 0x8ce868); when the slot is 0 (the host gave nothing) nothing changes.
+# With a 16:9 output, width / height = 16:9 and the result equals the original instruction.
+# Hor+: when the output is taller than 16:9 (width / height < 16/9) and the caller is the main camera (return address = item 3; the main camera rebuilds its projection here every frame), fovy (s2, copied away only at 0x8ce868) is multiplied by (16/9) ÷ ratio:
+# the horizontal view stays as at 16:9 with more visible above and below; without it the vertical view stays and the sides shrink. fovy·k approximates 2·atan(k·tan(fovy/2)) (main camera fovy 16°, error < 1%, affects only how much is seen, not proportions) ----
+ASPECT = {'56bf85bd535413464cb75bb6c2683b67': (0x8ce854, 0x1e204068, 0x205c88)}
+if BUILD_ID in ASPECT:
+    off, word, main_cam_ret = ASPECT[BUILD_ID]
+    assert struct.unpack_from('<I', IMG, off)[0] == word, f'投影寬高比原指令不符 {off:#x}'
+    assert off not in kinds and not any(seg[0].address <= off < seg[-1].address + 4 for seg in windows), f'投影寬高比與改寫點衝突 {off:#x}'
+    start = here()
+    emit(word)                                         # fmov s8, s3
+    emit(0x52800010 | (0x8e39 << 5)); emit(0x72A00010 | (0x3fe3 << 5))   # mov w16, #0x8e39 ; movk w16, #0x3fe3, lsl #16
+    emit(0x1E260071); emit(0x6B11021F)                 # fmov w17, s3 ; cmp w16, w17
+    bne = len(patch); emit(0)                          # b.ne 回去 | b.ne back
+    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'KRESF'); emit(LDRX(16, 16))
+    cbz = len(patch); emit(0)                          # cbz x16, 回去 | cbz x16, back
+    emit(0x1E270208)                                   # fmov s8, w16（寬 | width）
+    emit(0xD360FE10)                                   # lsr x16, x16, #32
+    emit(0x1E270209)                                   # fmov s9, w16（高 | height）
+    emit(0x1E291908)                                   # fdiv s8, s8, s9（比例 | ratio）
+    emit(ADRP(17, here(), main_cam_ret)); emit(ADDI(17, 17, main_cam_ret & 0xFFF)); emit(CMPR(30, 17))   # x17 = 主相機的返回地址；cmp x30, x17 | x17 = the main camera's return address
+    bne2 = len(patch); emit(0)                         # b.ne 回去 | b.ne back
+    emit(0x52800010 | (0x8e39 << 5)); emit(0x72A00010 | (0x3fe3 << 5)); emit(0x1E270209)   # s9 = 16/9
+    emit(0x1E292100)                                   # fcmp s8, s9
+    bge = len(patch); emit(0)                          # b.ge 回去（不比 16:9 高） | b.ge back (not taller than 16:9)
+    emit(0x1E281929)                                   # fdiv s9, s9, s8（k = (16/9) ÷ 比例 | k = (16/9) ÷ ratio）
+    emit(0x1E290842)                                   # fmul s2, s2, s9（fovy·k）
+    back = here(); emit(B(back, off + 4))
+    struct.pack_into('<I', patch, bne, 0x54000001 | (((back - (PATCH_OFF + bne)) >> 2) << 5))
+    struct.pack_into('<I', patch, cbz, 0xB4000010 | (((back - (PATCH_OFF + cbz)) >> 2) << 5))
+    struct.pack_into('<I', patch, bne2, 0x54000001 | (((back - (PATCH_OFF + bne2)) >> 2) << 5))
+    struct.pack_into('<I', patch, bge, 0x5400000A | (((back - (PATCH_OFF + bge)) >> 2) << 5))
+    put_branch(off, start); stat('aspect')
+    cuts.append((off, struct.pack('<I', word).hex(), struct.pack('<I', B(off, start)).hex(),
+                 '投影構造的寬高比：16:9 換成 KRESF 寬 / 高（其他比例不動）；主相機在比 16:9 高的輸出上 fovy 乘 (16/9) ÷ 比例（Hor+）', '僅宿主'))
+
+# ---- 世界點 → 界面位置（僅宿主）：{NSO 構建號: [(偏移, 原指令字, 投影寄存器)]}。0x352670(相機坐標, 投影, 半屏尺寸) 用 3D 投影矩陣算出歸一化坐標，
+# 乘半屏尺寸得界面坐標（Mii 頭上「A 對話」這類提示；調用方：房間的提示 0x35087c、通用的世界點 → 界面 0x2172190）。界面畫在置中 16:9 帶裡時（回放 ui_band），
+# 投影已按輸出比例放寬 / 加高，這個坐標就要再乘帶的縮放（寬：x × 寬 / 帶寬；高：y × 高 / 帶高），提示才落在物體上。
+# 跳板掛在調用方用結果的那一條：投影的寬高比 = KRESF 寬 / 高（就是被換過的投影）且 KBAND 不為 0（界面帶開著）時，s0 乘 KBAND 低 32 位、s1 乘高 32 位；
+# 只用 x16 / x17 與 s3–s5（調用之後都是死的）。界面帶關著或 16:9 時 KBAND = 0，結果與原指令相同 ----
+# ---- World point → UI position (host only): {NSO build ID: [(offset, original instruction word, projection register)]}. 0x352670(camera position, projection, half screen size) computes normalized coordinates with the 3D projection matrix
+# and multiplies by the half screen size to get UI coordinates (markers such as "A 對話" over a Mii; callers: the room marker 0x35087c and the generic world point → UI helper 0x2172190). When the UI is drawn in a centred 16:9 band (replay ui_band),
+# the projection has already been widened / heightened for the output, so these coordinates need the band's scale too (wide: x × width / band width; tall: y × height / band height) for the marker to sit on the object.
+# The trampoline sits on the instruction where the caller uses the result: when the projection's aspect = KRESF width / height (a replaced projection) and KBAND is not 0 (UI band on), s0 is multiplied by the low 32 bits of KBAND and s1 by the high 32 bits;
+# it uses only x16 / x17 and s3–s5 (all dead after the call). With the UI band off or a 16:9 output KBAND = 0 and the result equals the original instruction ----
+MARKER = {'56bf85bd535413464cb75bb6c2683b67': [(0x350fac, 0x2d2f07a0, 21), (0x21721e8, 0xa9434ff4, 20)]}
+for off, word, preg in MARKER.get(BUILD_ID, []):
+    assert struct.unpack_from('<I', IMG, off)[0] == word, f'世界點 → 界面原指令不符 {off:#x}'
+    assert off not in kinds and not any(seg[0].address <= off < seg[-1].address + 4 for seg in windows), f'世界點 → 界面與改寫點衝突 {off:#x}'
+    start = here(); skips = []
+    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'KRESF'); emit(LDRX(16, 16))
+    skips.append(len(patch)); emit(0xB4000010)          # cbz x16, 原指令 | cbz x16, original
+    emit(0x1E270203); emit(0xD360FE10); emit(0x1E270204); emit(0x1E241863)   # fmov s3, w16 ; lsr x16, x16, #32 ; fmov s4, w16 ; fdiv s3, s3, s4（輸出比例 | output ratio）
+    emit(0xBD40B004 | (preg << 5))                       # ldr s4, [xP, #0xb0]（投影的比例 | the projection's aspect）
+    emit(0x1E242060)                                     # fcmp s3, s4
+    skips.append(len(patch)); emit(0x54000001)          # b.ne 原指令 | b.ne original
+    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'KBAND'); emit(LDRX(16, 16))
+    skips.append(len(patch)); emit(0xB4000010)          # cbz x16, 原指令 | cbz x16, original
+    emit(0x1E270204); emit(0xD360FE10); emit(0x1E270205)   # fmov s4, w16（kx）; lsr x16, x16, #32 ; fmov s5, w16（ky）
+    emit(0x1E240800); emit(0x1E250821)                   # fmul s0, s0, s4 ; fmul s1, s1, s5
+    orig = here(); emit(word); emit(B(here(), off + 4))
+    for k in skips:
+        w_ = struct.unpack_from('<I', patch, k)[0]
+        struct.pack_into('<I', patch, k, w_ | (((orig - (PATCH_OFF + k)) >> 2) & 0x7FFFF) << 5)
+    put_branch(off, start); stat('marker')
+    cuts.append((off, struct.pack('<I', word).hex(), struct.pack('<I', B(off, start)).hex(),
+                 '世界點 → 界面位置：投影是換過比例的那個且界面帶開著時，結果乘界面帶縮放 KBAND', '僅宿主'))
 
 # 既有三塊原生規則跳板均只使用後繼覆蓋的死臨時w8，不改w0/stat返回、sp或NZCV。
 # 6c6290位於原mode3門後；前方Blaze/引用計數與數據失效6c62dc分支、後方狀態更新不動。
@@ -1063,7 +1166,7 @@ with open(P('options.tsv'), 'w') as f:
     for name, off, ob, nb, why in options: f.write(f'{name}\t{off:#x}\t{ob}\t{nb}\t{why}\n')   # 列：選項 偏移 原字節 新字節 理由 | Columns: option, offset, original bytes, new bytes, reason
 with open(P('params.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
-    for oa, wa, ob_, wb, r, key, why in params: f.write(f'{oa:#x}\t{ob_:#x}\tx{r}\t{key}\t{why}\n')
+    for oa, wa, ob_, wb, r, key, why in params: f.write(f'{oa:#x}\t{ob_ or oa:#x}\tx{r}\t{key}\t{why}\n')
 with open(P('obs.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, oid, ow, why in obs: f.write(f'{off:#x}\t{oid}\t{ow}\t{why}\n')

@@ -17,7 +17,7 @@ uint64_t dm_nvn_frame_count(void) { return 0; }
 int dm_nvn_ruler_truth(void) { return 0; }
 int dm_ingame_now(void) { return 1; }
 int mtl_fps_target(void) { return 60; }   // 目標幀率（nvn_mtl.m）：單測裡恆為 60，30 幀檔的用例直接給 period_ms | target frame rate (nvn_mtl.m): always 60 in the unit test, and the 30 fps mode cases pass period_ms directly
-pthread_key_t g_keyres[2];                                   // 分辨率參數位（loader.c）的樁：沒建鍵，取走 31 時不寫線程槽 | stub for the resolution parameter slot (loader.c): no key created, so taking 31 does not write the thread slot
+pthread_key_t g_keyres[2], g_keyresf, g_keyband;                                 // 分辨率參數位（loader.c）的樁：沒建鍵，取走 31 時不寫線程槽 | stub for the resolution parameter slot (loader.c): no key created, so taking 31 does not write the thread slot
 uint64_t dm_game_res(int docked) { (void)docked; return 0; }  // 出圖分辨率（dm_uiscreen.c）的樁 | stub for the render resolution (dm_uiscreen.c)
 void dm_uiscreen_res_reread(void) {}
 void dm_audio_suspend(int on) { (void)on; }   // DM_OE_SCRIPT 的 bg 項（hle_audio.c / hle_os.c / hle_nvn.c）的樁 | stubs for the bg item of DM_OE_SCRIPT (hle_audio.c / hle_os.c / hle_nvn.c)

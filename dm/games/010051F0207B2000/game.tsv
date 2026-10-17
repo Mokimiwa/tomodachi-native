@@ -59,3 +59,22 @@ network_clock	synced
 # Mac 滑鼠左鍵默認點哪觸屏哪：改寫器剪口讓界面每頁都收觸屏指針（dm/tools/patch_nso.py 本作條目），點按鈕就選中，比鎖定滑鼠推小手（像推搖桿）順手。玩家的鍵位表仍可改回 mouse:Left A
 # The Mac left mouse button defaults to touching where clicked: a rewriter cut makes every UI page accept the touch pointer (this title's entry in dm/tools/patch_nso.py), so clicking a button selects it, which handles better than capturing the mouse to push the hand (like a stick). The player's key table can still set mouse:Left A
 mouse_left	Pointer
+
+# ---- 畫面 | Picture ----
+# 主機 1920x1080、掌機 1280x720（遊戲寫死的值，改寫器換成參數位）。寬屏時主機模式同高放寬到最多 2580（約 21.5:9）：
+# 3D 比例正確（見 dm/tools/patch_nso.py 本作 PARAMS），界面畫進置中的 16:9 帶（見下方 ui_shaders）。再寬的寬度 Fl4sh9174 的 2580x1080 模組註明會崩，這裡也沒驗過
+# Docked 1920x1080, handheld 1280x720 (values hard-coded in the game, replaced by parameter slots in the rewriter). When wide, docked mode widens at the same height up to 2580 (about 21.5:9):
+# 3D keeps its proportions (see this title's PARAMS in dm/tools/patch_nso.py) and the UI is drawn into a centred 16:9 band (see ui_shaders below). Fl4sh9174's 2580x1080 mod notes that anything wider crashes, and wider was not verified here either
+render_size	1920x1080 1280x720
+render_wide_max	2580
+# 比 16:9 高的屏幕（iPhone Duo 約 1.42:1）：主機模式同寬加高到最多 1350（1920x1350 實測可跑；原生 2670x1878 開機即崩在 main+0x188154，像素量上限，同上）
+# Screens taller than 16:9 (iPhone Duo, about 1.42:1): docked mode keeps the width and grows taller up to 1350 (1920x1350 runs; native 2670x1878 crashes at boot in main+0x188154, a pixel-count ceiling as above)
+render_tall_max	1350
+# 界面著色器的來源（shader_map.tsv 第 5 列前綴）：ui2d 內建、字型內建、各版面封存檔。不是 16:9 時界面畫進置中的 16:9 帶，不再拉伸
+# Sources of the UI shaders (column 5 prefixes in shader_map.tsv): ui2d built-ins, font built-ins and each layout archive. When not 16:9 the UI is drawn into a centred 16:9 band instead of being stretched
+ui_shaders	main#BNSH@0x363f000 main#BNSH@0x3637000 /Layout/
+# 其中頂點階段 cb0 前 4 行就是裁剪變換（行主序）的：ui2d 與字型內建（11 個頂點著色器都量過，x 只取第 0 行、y 只取第 1 行）。這些繪製不縮視口，改把第 0 行（寬）或第 1 行（高）
+# 乘帶的比例、視口照舊整個畫面：帶內像素不變，伸出 16:9 畫布的部分（例如 Mii 走到兩側時頭上的思考泡泡）照樣畫在兩側。版面封存檔的著色器佈局各異，仍縮視口
+# Of those, the ones whose vertex-stage cb0 starts with the 4-row clip transform (row-major): the ui2d and font built-ins (all 11 vertex shaders checked: x reads only row 0, y only row 1). These draws keep the whole-picture viewport
+# and get row 0 (wide) or row 1 (tall) multiplied by the band's ratio instead: pixels inside the band stay the same, and parts reaching past the 16:9 canvas (such as the thought bubble over a Mii that walked to the side) still show in the strips. Layout archive shaders vary in layout and keep the shrunken viewport
+ui_open_shaders	main#BNSH@0x363f000 main#BNSH@0x3637000

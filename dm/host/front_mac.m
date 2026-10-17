@@ -7,7 +7,7 @@
 //   左鍵的默認由遊戲檔案定（game.tsv mouse_left，缺省 A）：朋友收集默認 Pointer。
 // 改鍵：DM_KEYMAP=<文件>（缺省 $DM_ROOT/keymap.txt），每行「來源 <Switch 控制項>」，逐條覆蓋默認表；來源 key:<鍵名>（見 k_keyname，按美式鍵盤的鍵位，不隨輸入法變）、
 //   mouse:Left / Right / Other / Move、trackpad:Scroll / Rotate、pinch:In / Out、swipe:Left / Right / Up / Down。表文件改過後，窗口回到前台時自動重讀。
-// 窗口與菜單（Mac 原生）：標題欄三個按鈕都能用（關 = 退出前確認、縮到最小 = 掛起、綠鈕 = 全屏）；全屏或窗口比例不是 16:9 時畫面按比例居中、兩邊補黑；
+// 窗口與菜單（Mac 原生）：標題欄三個按鈕都能用（關 = 退出前確認、縮到最小 = 掛起、綠鈕 = 全屏）；全屏或窗口比例不是畫面比例（缺省 16:9；DM_ASPECT / 設定 GameAspect 可改，見 dm_aspect.h）時畫面按比例居中、兩邊補黑；
 //   菜單有 關於 / 編輯按鍵 / 隱藏 / 退出，編輯（輸入框裡拷貝粘貼用），遊戲（暫停、截圖、存檔文件夾、遊戲語言），顯示方式（三檔窗口大小、全屏），窗口，輔助說明（操作方式、日誌）。
 //   界面文字按系統首選語言出英文或繁體中文（k_text；任何一種中文都用繁體）。
 // Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard → mapping layer (dm_bind.h) → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
@@ -19,7 +19,7 @@
 //   The left button's default comes from the game profile (game.tsv mouse_left, A by default): Tomodachi Life defaults to Pointer.
 // Remapping: DM_KEYMAP=<file> (default $DM_ROOT/keymap.txt), one line per source "source <Switch control>", overriding the default table entry by entry; sources key:<key name> (see k_keyname, by US keyboard position, independent of the input method),
 //   mouse:Left / Right / Other / Move, trackpad:Scroll / Rotate, pinch:In / Out, swipe:Left / Right / Up / Down. After the file changes it is reread automatically when the window comes back to the front.
-// Window and menus (native Mac): all three title bar buttons work (close = confirm before quitting, minimize = suspend, green = full screen); in full screen or at a non-16:9 window shape the picture is centred at its own aspect with black bars;
+// Window and menus (native Mac): all three title bar buttons work (close = confirm before quitting, minimize = suspend, green = full screen); in full screen or at a window shape other than the picture's (16:9 by default; DM_ASPECT / the GameAspect setting can change it, see dm_aspect.h) the picture is centred at its own aspect with black bars;
 //   the menus hold About / Edit Controls / Hide / Quit, Edit (copy and paste in the text box), Game (pause, screenshot, save folder, game language), View (three window sizes, full screen), Window, Help (controls, log).
 //   Interface text follows the system's preferred language: English or Traditional Chinese (k_text; any Chinese gets Traditional).
 #import <Cocoa/Cocoa.h>
@@ -29,6 +29,7 @@
 #include "dm_input.h"
 #include "dm_bind.h"
 #include "dm_uiscreen.h"
+#include "dm_aspect.h"
 void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h));
 static void ui_rect_frac(double *fy, double *fh) { int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h); if (dm_screen_real(&rw, &rh) && rh > 0) { *fy = (double)y / rh; *fh = (double)h / rh; } }   // 同 front_ios.m：界面矩形的縱向位置與高（佔畫面高的比例） | Same as front_ios.m: vertical position and height of the UI rectangle (as fractions of the frame height)
 __attribute__((constructor)) static void ui_shift_reg(void) { mtl_set_ui_rect_fn(ui_rect_frac); }   // 不開窗口的跑法（截圖 / 閘門）也要生效，所以不放在建圖層那裡 | Must also take effect when running without a window (screenshots / gate checks), so it is not placed where the layer is created
@@ -42,17 +43,32 @@ void dm_gfx_shot_at(long k, const char *path);   // nvn_mtl.m：k 次上屏後�
 
 static CAMetalLayer *g_layer;
 static NSWindow *g_win;
-static NSView *g_view;            // 內容視圖：黑底，遊戲圖層按 16:9 居中掛在上面 | content view: black, the game layer sits centred on it at 16:9
+static NSView *g_view;            // 內容視圖：黑底，遊戲圖層按畫面形狀居中掛在上面 | content view: black, the game layer sits centred on it at the picture's shape
 static int g_captured, g_paused;  // 鼠標已鎖定 / 已暫停（只在主線程讀寫） | mouse captured / paused (main thread only)
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
-// 原版 16:9 常數，行為不變；DM_GAME_RES=寬x高（主機模式，掌機按 720/900 同比）只供與 iOS 寬屏對拍
-// The original game's 16:9 constants, behavior unchanged; DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
+// 畫面寬高比（dm_aspect.h）：環境變量 DM_ASPECT 優先，其次本 App 的設定 GameAspect（defaults write 寫）；「screen」= 主顯示器的形狀。
+// 啓動時定一次（任意線程先問到都行：CGDisplayBounds 不要求主線程），之後窗口形狀、畫面位置、給遊戲的輸出分辨率都按它
+// Picture aspect ratio (dm_aspect.h): the environment variable DM_ASPECT first, then this app's setting GameAspect (written with defaults write); "screen" = the main display's shape.
+// Decided once at launch (whichever thread asks first: CGDisplayBounds does not need the main thread); the window shape, the picture placement and the output resolution given to the game all follow it from then on
+static double game_aspect(void) {
+    static double a; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *e = getenv("DM_ASPECT"); NSString *pref = e ? nil : [NSUserDefaults.standardUserDefaults stringForKey:@"GameAspect"];
+        CGRect sb = CGDisplayBounds(CGMainDisplayID());
+        a = dm_aspect_parse(e ? e : pref.UTF8String, sb.size.height > 0 ? sb.size.width / sb.size.height : 0);
+        if (e || pref) LOG("前端：畫面寬高比「%s」→ %.4f", e ? e : pref.UTF8String, a);
+    });
+    return a;
+}
+// 遊戲檔案的 16:9 尺寸按畫面寬高比改形狀（寬的同高放寬、高的同寬加高；DM_ASPECT 沒給 = 原值，行為不變）；DM_GAME_RES=寬x高（主機模式，掌機按 720/900 同比）只供與 iOS 寬屏對拍
+// The game profile's 16:9 sizes reshaped for the picture aspect ratio (wider ones widen at the same height, taller ones grow taller at the same width; no DM_ASPECT = the original values, behaviour unchanged); DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
 uint64_t front_game_res(int docked) {
     unsigned w, h; const char *e = getenv("DM_GAME_RES");
     if (e && sscanf(e, "%ux%u", &w, &h) == 2) return docked ? (uint64_t)h << 32 | w : (uint64_t)(h * 4 / 5) << 32 | (w * 4 / 5 + 3) / 4 * 4;
-    return docked ? 900ull << 32 | 1600 : 720ull << 32 | 1280;
+    return dm_aspect_game_res(docked, game_aspect());
 }
+static NSSize picture_size(void) { uint64_t r = front_game_res(1); return NSMakeSize((uint32_t)r, (uint32_t)(r >> 32)); }   // 遊戲輸出的形狀（寬、高） | the shape of the game's output (width, height)
 
 // ---------- 界面文字（英文 / 繁體中文，按系統首選語言） | Interface text (English / Traditional Chinese, by the system's preferred language) ----------
 enum { T_ABOUT, T_EDIT_CONTROLS, T_HIDE, T_HIDE_OTHERS, T_SHOW_ALL, T_QUIT, T_EDIT, T_UNDO, T_REDO, T_CUT, T_COPY, T_PASTE, T_SELECT_ALL,
@@ -194,11 +210,11 @@ static void on_key(NSEvent *e, int down) {
 }
 
 // ---------- 畫面位置、提示、鎖定鼠標、暫停 | Picture placement, hints, mouse capture, pause ----------
-// 遊戲畫面在內容視圖裡的位置：16:9 按比例居中（窗口限了比例，全屏時兩邊或上下補黑） | where the game picture sits in the content view: 16:9 centred (the window keeps the ratio; full screen adds black bars)
+// 遊戲畫面在內容視圖裡的位置：按畫面形狀（缺省 16:9）等比居中（窗口限了比例，全屏時兩邊或上下補黑） | where the game picture sits in the content view: centred at the picture's shape (16:9 by default) (the window keeps the ratio; full screen adds black bars)
 static NSRect game_rect(void) {
-    NSRect b = g_view.bounds; CGFloat w = b.size.width, h = b.size.height;
-    if (w * 9 > h * 16) { CGFloat nw = h * 16 / 9; return NSMakeRect(floor((w - nw) / 2), 0, nw, h); }
-    CGFloat nh = w * 9 / 16; return NSMakeRect(0, floor((h - nh) / 2), w, nh);
+    NSRect b = g_view.bounds; CGFloat w = b.size.width, h = b.size.height; NSSize p = picture_size();
+    if (w * p.height > h * p.width) { CGFloat nw = h * p.width / p.height; return NSMakeRect(floor((w - nw) / 2), 0, nw, h); }
+    CGFloat nh = w * p.height / p.width; return NSMakeRect(0, floor((h - nh) / 2), w, nh);
 }
 static void layer_layout(void) {
     NSRect r = game_rect(); CGFloat s = g_win.backingScaleFactor;
@@ -315,11 +331,11 @@ static int upscale_pref(void) { id v = [NSUserDefaults.standardUserDefaults obje
     a.informativeText = [T(dm_bind_is_pointer(g_mbrow[MB_LEFT]) ? T_CONTROLS_TAP : T_CONTROLS_MOUSE) stringByAppendingString:T(T_CONTROLS_BODY)];
     if (g_win.attachedSheet) [a runModal]; else [a beginSheetModalForWindow:g_win completionHandler:nil];
 }
-- (void)setGameSize:(NSMenuItem *)it {   // tag = 內容寬（點），高按 16:9；放不下就縮到屏幕可用區域 | tag = content width in points, height by 16:9; shrunk to the screen's usable area if it does not fit
-    NSRect vis = g_win.screen.visibleFrame, fr = g_win.frame;
-    CGFloat w = it.tag, h = w * 9 / 16, chrome = fr.size.height - g_view.bounds.size.height;
-    if (h + chrome > vis.size.height) { h = vis.size.height - chrome; w = h * 16 / 9; }
-    if (w > vis.size.width) { w = vis.size.width; h = w * 9 / 16; }
+- (void)setGameSize:(NSMenuItem *)it {   // tag = 內容寬（點），高按畫面形狀；放不下就縮到屏幕可用區域 | tag = content width in points, height by the picture's shape; shrunk to the screen's usable area if it does not fit
+    NSRect vis = g_win.screen.visibleFrame, fr = g_win.frame; NSSize p = picture_size();
+    CGFloat w = it.tag, h = round(w * p.height / p.width), chrome = fr.size.height - g_view.bounds.size.height;
+    if (h + chrome > vis.size.height) { h = vis.size.height - chrome; w = round(h * p.width / p.height); }
+    if (w > vis.size.width) { w = vis.size.width; h = round(w * p.height / p.width); }
     NSRect nf = [g_win frameRectForContentRect:NSMakeRect(0, 0, w, h)];
     nf.origin.x = NSMidX(fr) - nf.size.width / 2; nf.origin.y = NSMaxY(fr) - nf.size.height;   // 標題欄不動、左右以原中線為準 | keep the title bar in place, centred on the old midline
     nf.origin.x = fmin(fmax(nf.origin.x, vis.origin.x), NSMaxX(vis) - nf.size.width); nf.origin.y = fmin(fmax(nf.origin.y, vis.origin.y), NSMaxY(vis) - nf.size.height);
@@ -396,7 +412,8 @@ static void menus_build(void) {
     }
     NSMenu *view = menu_add(bar, T(T_VIEW));
     static const int widths[3] = {960, 1280, 1600};
-    for (int i = 0; i < 3; i++) item_add(view, [NSString stringWithFormat:@"%d × %d", widths[i], widths[i] * 9 / 16], @selector(setGameSize:), [NSString stringWithFormat:@"%d", i + 1], CMD, g_app).tag = widths[i];
+    NSSize p = picture_size();
+    for (int i = 0; i < 3; i++) item_add(view, [NSString stringWithFormat:@"%d × %d", widths[i], (int)round(widths[i] * p.height / p.width)], @selector(setGameSize:), [NSString stringWithFormat:@"%d", i + 1], CMD, g_app).tag = widths[i];
     [view addItem:NSMenuItem.separatorItem];
     item_add(view, T(T_FULL), @selector(toggleFullScreen:), @"f", CMD | NSEventModifierFlagControl, nil);
     [view addItem:NSMenuItem.separatorItem];
@@ -427,14 +444,14 @@ void front_run(void (*guest)(void)) {
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         g_app = [DMApp new]; NSApp.delegate = g_app;
         menus_build(); mtl_set_upscale(upscale_pref());
-        NSRect r = NSMakeRect(0, 0, 1280, 720);
+        NSSize pic = picture_size(); NSRect r = NSMakeRect(0, 0, 1280, round(1280 * pic.height / pic.width));
         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];
         g_win = win; win.delegate = g_app;
         win.title = app_name();
         win.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
-        win.contentAspectRatio = NSMakeSize(16, 9); win.contentMinSize = NSMakeSize(640, 360);
+        win.contentAspectRatio = pic; win.contentMinSize = NSMakeSize(640, round(640 * pic.height / pic.width));
         NSView *v = win.contentView; g_view = v;
         CALayer *root = [CALayer layer]; root.backgroundColor = NSColor.blackColor.CGColor;
         v.layer = root; v.wantsLayer = YES;   // 先給圖層再開 wantsLayer：視圖托管這個圖層，子圖層由這裡擺 | layer first, then wantsLayer: the view hosts this layer and the sublayers are placed here
@@ -523,10 +540,10 @@ void front_run(void (*guest)(void)) {
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; capture_set(0); if (!g_paused) { dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); } }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!g_paused) { dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); } }];
         [nc addObserverForName:NSApplicationWillTerminateNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; capture_set(0); }];
-        // 全螢幕的尺寸不是 16:9：進全螢幕前先拿掉比例限制（不拿掉 AppKit 會馬上退回視窗），退出後再加回來；黑邊由 layer_layout 補
-        // The full-screen size is not 16:9: drop the aspect constraint before entering (otherwise AppKit drops straight back to the window) and restore it after leaving; layer_layout adds the bars
+        // 全螢幕的形狀不一定是畫面的形狀：進全螢幕前先拿掉比例限制（不拿掉 AppKit 會馬上退回視窗），退出後再加回來；黑邊由 layer_layout 補
+        // The full-screen shape need not match the picture's: drop the aspect constraint before entering (otherwise AppKit drops straight back to the window) and restore it after leaving; layer_layout adds the bars
         [nc addObserverForName:NSWindowWillEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; win.contentResizeIncrements = NSMakeSize(1, 1); }];
-        [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; win.contentAspectRatio = NSMakeSize(16, 9); }];
+        [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; win.contentAspectRatio = pic; }];
         for (NSNotificationName nm in @[NSWindowWillEnterFullScreenNotification, NSWindowDidEnterFullScreenNotification, NSWindowWillExitFullScreenNotification, NSWindowDidExitFullScreenNotification])
             [nc addObserverForName:nm object:win queue:nil usingBlock:^(NSNotification *n) { LOG("前端：%s", n.name.UTF8String); }];   // 全螢幕切換的每一步記一行 | one line per full-screen transition step
         // 客體線程：棧 64 MiB（Switch 主線程棧由 npdm 指定，宿主給足）

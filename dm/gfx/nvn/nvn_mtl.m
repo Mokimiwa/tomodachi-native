@@ -459,6 +459,10 @@ static vis_list *vis_snapshot(void) {
 // Target ranges of buffer writes (copies / inline uniform updates) already encoded in this submission but not yet executed on the GPU: reading these addresses on the CPU side at encode time yields old values (uv_proof avoids them when reading uniforms)
 #define PEND_MAX 256
 static uint64_t g_pend_lo[PEND_MAX], g_pend_hi[PEND_MAX]; static int g_npend, g_pend_over;
+// 本提交裡的內聯 uniform 更新另記一份（只給界面帶讀界面四邊形的常量用，nvn_mtl.m ui_read）：界面那一批常有幾百筆更新，上面的表會滿（滿了一律當讀不到）
+// Inline uniform updates in this submission, recorded separately (only for the UI band reading UI quad constants, nvn_mtl.m ui_read): the UI batch often has several hundred updates and the table above fills up (when full everything counts as unreadable)
+#define UPD_MAX 4096
+static uint64_t g_upd_lo[UPD_MAX], g_upd_hi[UPD_MAX]; static const uint8_t *g_upd_src[UPD_MAX]; static int g_nupd, g_upd_over;
 static const uint8_t *g_pend_src[PEND_MAX];   // 這次寫入的數據在宿主側的副本（內聯 uniform 更新：共享環裡的那份；拷貝：源的 CPU 視圖；填充等 = NULL） | host-side copy of the data this write puts there (inline uniform update: the copy in the shared ring; copies: the source's CPU view; fills etc. = NULL)
 static int pend_hits(uint64_t a, uint64_t n) { if (g_pend_over) return 1; for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1; return 0; }
 // 編碼時要讀的位置若在本提交裡還排著 GPU 側寫入：取最後一筆整段蓋住它、且有數據副本的寫入（就是 GPU 執行到此處時那裡的值）；找不到返回 NULL
@@ -540,7 +544,7 @@ void mtl_sub_begin(void) {
     // 上次提交槽用滿時另建的溢出緩衝（見 g_vis_n >= VIS_SLOTS 那一處）：退役。原先這裡直接置空，它留在駐留集裡永遠不放（取自 d2r-mobile 2eb575877）
     // The overflow buffer created when the previous submission ran out of slots (see g_vis_n >= VIS_SLOTS): retire it. It used to be just cleared here and stayed in the residency set for good (from d2r-mobile 2eb575877)
     if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis);
-    g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; g_npend = 0; g_pend_over = 0;
+    g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; g_npend = 0; g_pend_over = 0; g_nupd = 0; g_upd_over = 0;
     zskip_clear(); g_zskip_count = 0;
     int pick = -1;
     for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].fence <= g_done) { pick = i; break; }
@@ -666,6 +670,7 @@ void mtl_sub_update(const void *data, uint64_t dst, uint64_t n) {
     }
     memcpy((uint8_t *)g_ubs_buf.contents + g_ubs_off, data, n);
     if (pi >= 0) g_pend_src[pi] = (const uint8_t *)g_ubs_buf.contents + g_ubs_off;   // 環裡這份留到本提交跑完 | this copy in the ring lives until the submission completes
+    if (g_nupd < UPD_MAX) { g_upd_lo[g_nupd] = dst; g_upd_hi[g_nupd] = dst + n; g_upd_src[g_nupd++] = (const uint8_t *)g_ubs_buf.contents + g_ubs_off; } else g_upd_over = 1;
     enc_b_copy_buffer(blit_buf(0, 0, dst, dst + n), g_ubs_buf, g_ubs_off, (__bridge id<MTLBuffer>)db, dof, n);
     g_ubs_off += need;
 }
@@ -3410,6 +3415,7 @@ static uint64_t zero_bank_gpu(void) { static uint64_t gpu; if (!gpu) gpu = zero_
 // Moving the viewport is not used: the viewport's top edge is the edge of the clip volume, so top-anchored widgets that the host lifts back to the real top of the picture (UI coordinate y negative) would be clipped away entirely.
 // g_ui_moff is set per draw by draw() (0 = no change); the copies live in a ring buffer, and the same address in the same pass is copied only once.
 static double g_ui_moff;
+static uint64_t g_ui_open_gpu;   // 這次繪製頂點階段 cb0 改綁的拷貝（界面帶畫出帶外，ui_open_patch；0 = 不改） | the copy bound in place of vertex-stage cb0 for this draw (UI band drawing past the band, ui_open_patch; 0 = unchanged)
 static int ui_mat_ok(void) { const p_bind_buf *u = &S.ubo[0][0]; void *mb; uint64_t mo; return u->addr && u->size >= 64 && u->size <= 4096 && !pend_hits(u->addr, u->size) && mtl_addr(u->addr, u->size, &mb, &mo); }
 static uint64_t ui_mat_patch(const p_bind_buf *u, void *mb, uint64_t mo) {
     enum { RING = 4 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu, la, ls, lp, lg; static size_t at; static double lo;
@@ -3466,7 +3472,8 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             void *mb; uint64_t mo, gpu;
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "階段 %d cb%d 沒有綁定 uniform 緩衝", nvn_stage, reg); continue; }
             use_rec("buf", u->addr, u->size, 0, NULL);
-            if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
+            if (nvn_stage == 0 && reg == 0 && g_ui_open_gpu) gpu = g_ui_open_gpu;
+            else if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
@@ -4988,6 +4995,101 @@ static uint64_t ghost_tex(void) {   // 這次繪製的片元著色器實際採�
     __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; NvShader *f = pr ? pr->sh[1] : nil; if (!f) return 0;
     for (int i = 0; i < f->rf.nb; i++) if ((f->rf.b[i].kind == NVN_RB_TEX || f->rf.b[i].kind == NVN_RB_SAMP) && f->rf.b[i].reg < 128 && S.tex[1][f->rf.b[i].reg]) return S.tex[1][f->rf.b[i].reg];
     return 0; }
+// 界面帶（遊戲檔案 ui_shaders → game.py 生成的 DM_GAME_UI_VS）：出圖比例不是 16:9 時，界面繪製改畫進視口裡置中的 16:9 帶
+// （橫向或縱向線性縮放視口與剪裁，界面不變形），3D 照舊鋪滿。界面的投影都按 16:9 算（量過：透視 m5/m0 = 16/9、正交 2/1920 × 2/1080），所以帶內與 16:9 出圖逐像素相同。
+// 只對畫到出圖尺寸目標（與交換鏈貼圖同大，mtl_ui_band_screen 登記）的繪製；界面自己的離屏小貼圖（字、陰影）不動。帶按這次繪製的視口算，掌機模式（視口 = 裁切區）同樣適用。
+// 哪些繪製進帶：① 頂點著色器在清單裡，但蓋滿整個視口的（全屏壓暗、轉場、前端頁的整頁底圖）照舊鋪滿整個畫面，見 ui_cover_screen；
+// ② 界面階段（這一幀這個目標上第一次界面繪製起）裡別的著色器畫的四邊形（6 頂點：界面陰影先畫到小貼圖、模糊後用 agl 拷貝貼回），3 頂點的全屏三角形不進。
+// 怎麼進帶：一般縮視口與剪裁；ui_open_shaders 裡的著色器改乘 cb0 裁剪變換的一行、視口不縮（ui_open_patch），帶內一樣，伸出畫布的（Mii 走到兩側時的思考泡泡）畫在兩側。
+// 量過前端流程與房間：橫向伸出畫布的界面只有這類跟著世界走的提示；縱向只有開頭幾頁右下角一塊滑入時壓出底邊 9% 的裝飾，高的畫面上滑入那幾幀會露進下方黑帶區
+// DM_UI_BAND=0 關（界面隨出圖拉伸，診斷用）
+// UI band (game profile ui_shaders → DM_GAME_UI_VS generated by game.py): when the output is not 16:9, UI draws go into a 16:9 band centred in the viewport
+// (viewport and scissor scaled linearly along x or y, so the UI keeps its shape), while 3D still fills the picture. The UI's projections are all 16:9 (measured: perspective m5/m0 = 16/9, orthographic 2/1920 × 2/1080), so the band matches 16:9 output pixel for pixel.
+// Only draws onto targets of the output size (the swapchain texture size, registered by mtl_ui_band_screen); the UI's own small offscreen textures (text, shadows) are untouched. The band follows this draw's viewport, so handheld mode (viewport = crop region) works too.
+// Which draws go in: (1) vertex shader on the list, except ones covering the whole viewport (full-screen dimmers, fades, the whole-page background of front-end pages), which still cover the picture, see ui_cover_screen;
+// (2) quads (6 vertices) from other shaders in the UI phase (from the first UI draw onto this target in this frame: UI shadows are drawn into small textures, blurred and copied back with agl); 3-vertex full-screen triangles stay out.
+// How draws go in: usually by shrinking the viewport and scissor; shaders listed in ui_open_shaders instead get one row of their cb0 clip transform scaled with the viewport left whole (ui_open_patch), the same inside the band, while parts past the canvas (the thought bubble of a Mii at the side) show in the strips.
+// Measured over the front-end flow and the room: the only UI reaching sideways past the canvas is this kind of world-anchored marker; vertically only a corner piece on the first pages reaches 9% past the bottom while it slides in, showing in the bottom strip for those frames on taller pictures
+// DM_UI_BAND=0 turns it off (the UI stretches with the output, for diagnosis)
+static int g_ui_scr_w, g_ui_scr_h;
+void mtl_ui_band_screen(int w, int h) { g_ui_scr_w = w; g_ui_scr_h = h; }
+static const uint64_t k_ui_vs[] = DM_GAME_UI_VS;   // 升序 | ascending
+static int ui_vs_has(uint64_t k) { int lo = 0, hi = DM_GAME_UI_VS_N - 1; while (lo <= hi) { int m = (lo + hi) / 2; if (k_ui_vs[m] == k) return 1; if (k_ui_vs[m] < k) lo = m + 1; else hi = m - 1; } return 0; }
+// 能畫出帶外的界面著色器（遊戲檔案 ui_open_shaders）：頂點階段 cb0 前 4 行是裁剪變換（行主序），見 ui_open_patch | UI shaders that may draw past the band (game profile ui_open_shaders): vertex-stage cb0 starts with the clip transform (row-major), see ui_open_patch
+#ifndef DM_GAME_UI_VS_OPEN_N
+#define DM_GAME_UI_VS_OPEN_N 0
+#define DM_GAME_UI_VS_OPEN {0}
+#endif
+static const uint64_t k_ui_vs_open[] = DM_GAME_UI_VS_OPEN;   // 升序 | ascending
+static int ui_vs_open(uint64_t k) { int lo = 0, hi = DM_GAME_UI_VS_OPEN_N - 1; while (lo <= hi) { int m = (lo + hi) / 2; if (k_ui_vs_open[m] == k) return 1; if (k_ui_vs_open[m] < k) lo = m + 1; else hi = m - 1; } return 0; }
+// 這次界面繪製是否蓋滿整個視口。ui2d 著色器的常量佈局（翻譯結果，如 ce7eacf8）：階段 0 cb0 開頭 4 行 = 投影矩陣（行主序），接著 3 行 = 模型視圖，
+// 第 33 行 = {寬, 高, 左, 上}；頂點屬性 0 = 四邊形角 (u, v)，局部坐標 (左 + u·寬, 上 − v·高)。讀不到或不是這個佈局（w ≤ 0）就當沒蓋滿
+// Whether this UI draw covers the whole viewport. Constant layout of the ui2d shaders (from the translation, e.g. ce7eacf8): stage 0 cb0 starts with 4 rows = projection matrix (row-major), then 3 rows = model-view,
+// row 33 = {width, height, left, top}; vertex attribute 0 = quad corner (u, v), local position (left + u·width, top − v·height). Unreadable or not this layout (w ≤ 0) counts as not covering
+// 讀 GPU 執行到這次繪製時看到的值：本提交裡排著內聯更新的取其數據副本，否則讀當前內存 | read the value the GPU sees at this draw: the data copy of an inline update queued in this submit, otherwise current memory
+// 內聯更新整段蓋住就取其副本，部分重疊算讀不到；沒有更新的地方讀當前內存（界面的常量與單位四邊形頂點都是內聯更新或 CPU 寫的）
+// A covering inline update gives its copy, a partial overlap counts as unreadable; places without updates are read from current memory (the UI constants and the unit-quad vertices are written inline or by the CPU)
+static int ui_read(uint64_t a, uint64_t n, void *dst) {
+    if (g_upd_over) return 0;
+    for (int i = g_nupd - 1; i >= 0; i--) if (a < g_upd_hi[i] && a + n > g_upd_lo[i]) {
+        if (a < g_upd_lo[i] || a + n > g_upd_hi[i]) return 0;
+        memcpy(dst, g_upd_src[i] + (a - g_upd_lo[i]), n); return 1;
+    }
+    void *mb; uint64_t mo; const uint8_t *b; if (!mtl_addr(a, n, &mb, &mo) || !(b = [(__bridge id<MTLBuffer>)mb contents])) return 0;
+    memcpy(dst, b + mo, n); return 1;
+}
+// 界面帶畫出帶外（ui_open_shaders）：不縮視口，改綁一份 cb0 拷貝，裁剪變換第 0 行乘 sx（寬）、第 1 行乘 sy（高）。帶內像素與縮視口相同
+// （NDC 乘帶比例 + 整個視口 = NDC 映到帶裡），伸出 16:9 畫布的部分不再被帶邊裁掉。拷貝取 GPU 執行到這次繪製時看到的值：當前內存疊上本提交裡按序排著的內聯更新。
+// 內聯更新表滿了、緩衝讀不到或長度不合就返回 0，調用方退回縮視口。拷貝放環形緩衝；同一地址、同一通道、其間沒有新的內聯更新時重用上一份
+// UI band drawing past the band (ui_open_shaders): instead of shrinking the viewport, bind a copy of cb0 with row 0 of the clip transform multiplied by sx (wide) or row 1 by sy (tall). Pixels inside the band match the shrunken viewport
+// (NDC scaled by the band ratio + the whole viewport = NDC mapped into the band), and parts reaching past the 16:9 canvas are no longer clipped at the band edge. The copy holds what the GPU sees at this draw: current memory with this submission's queued inline updates applied in order.
+// Returns 0 when the inline update table is full, the buffer is unreadable or its size is out of range, and the caller falls back to the shrunken viewport. Copies live in a ring buffer; the previous copy is reused for the same address in the same pass with no new inline update in between
+static uint64_t ui_open_patch(double sx, double sy) {
+    enum { RING = 16 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu, la, ls, lp, lg; static size_t at; static int lu = -1; static double lx, ly;
+    const p_bind_buf *u = &S.ubo[0][0]; void *mb; uint64_t mo; const uint8_t *src;
+    if (g_upd_over || !u->addr || u->size < 64 || u->size > 4096 || !mtl_addr(u->addr, u->size, &mb, &mo) || !(src = [(__bridge id<MTLBuffer>)mb contents])) return 0;
+    if (la == u->addr && ls == u->size && lp == g_pass.serial && lu == g_nupd && lx == sx && ly == sy) return lg;
+    if (!ring) { ring = [g_dev newBufferWithLength:RING options:MTLResourceStorageModeShared]; res_add(ring); ring_gpu = ring.gpuAddress; }
+    size_t n = (u->size + 255) & ~(size_t)255; if (at + n > RING) at = 0;
+    uint8_t *dst = (uint8_t *)ring.contents + at; memcpy(dst, src + mo, u->size);
+    for (int i = 0; i < g_nupd; i++) {   // 按序疊上本提交的內聯更新 | apply this submission's inline updates in order
+        uint64_t lo = g_upd_lo[i] > u->addr ? g_upd_lo[i] : u->addr, hi = g_upd_hi[i] < u->addr + u->size ? g_upd_hi[i] : u->addr + u->size;
+        if (lo < hi) memcpy(dst + (lo - u->addr), g_upd_src[i] + (lo - g_upd_lo[i]), hi - lo);
+    }
+    float m[8]; memcpy(m, dst, 32); for (int k = 0; k < 4; k++) { m[k] *= (float)sx; m[4 + k] *= (float)sy; } memcpy(dst, m, 32);
+    la = u->addr; ls = u->size; lp = g_pass.serial; lu = g_nupd; lx = sx; ly = sy; lg = ring_gpu + at; at += n;
+    return lg;
+}
+static int ui_cover_screen(int n) {
+    const p_bind_buf *u = &S.ubo[0][0]; int sd = S.stream[0].stride;
+    if (n > 6) n = 6;
+    float P[16], M[12], q[4], x0 = 9, x1 = -9, y0 = 9, y1 = -9; uint8_t vp[6 * 64];
+    if (n < 3 || sd < 8 || sd > 64 || !u->addr || u->size < 34 * 16 || !S.vbuf[0].address) return 0;
+    if (!ui_read(u->addr, 64, P) || !ui_read(u->addr + 64, 48, M) || !ui_read(u->addr + 33 * 16, 16, q) || !ui_read(S.vbuf[0].address, (uint64_t)sd * n, vp)) return 0;
+    for (int i = 0; i < n; i++) {
+        float f[2]; memcpy(f, vp + (size_t)sd * i, 8);
+        float lx = q[2] + f[0] * q[0], ly = q[3] - f[1] * q[1];
+        float vx = M[0] * lx + M[1] * ly + M[3], vy = M[4] * lx + M[5] * ly + M[7], vz = M[8] * lx + M[9] * ly + M[11];
+        float cx = P[0] * vx + P[1] * vy + P[2] * vz + P[3], cy = P[4] * vx + P[5] * vy + P[6] * vz + P[7], cw = P[12] * vx + P[13] * vy + P[14] * vz + P[15];
+        if (!(cw > 1e-6f)) return 0;
+        float nx = cx / cw, ny = cy / cw; x0 = fminf(x0, nx); x1 = fmaxf(x1, nx); y0 = fminf(y0, ny); y1 = fmaxf(y1, ny);
+    }
+    return x0 <= -0.98f && x1 >= 0.98f && y0 <= -0.98f && y1 >= 0.98f;
+}
+static void ui_band(int n, NSUInteger tw, NSUInteger th, double *bx, double *bs, double *by, double *bt, int *open) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_UI_BAND"); on = DM_GAME_UI_VS_N > 0 && !(e && !strcmp(e, "0")); }
+    if (!on || tw != (NSUInteger)g_ui_scr_w || th != (NSUInteger)g_ui_scr_h || !S.prog) return;
+    __unsafe_unretained NvProg *pr = prog_get(S.prog); if (!pr || !pr->sh[0]) return;
+    double vx = S.has_vp ? S.vp[0][0] : 0, vy = S.has_vp ? S.vp[0][1] : 0, vw = S.has_vp ? S.vp[0][2] : tw, vh = S.has_vp ? S.vp[0][3] : th;
+    if (vw < 64 || vh < 64 || fabs(vw * 9 - vh * 16) < 16) return;   // 16:9（或很小）的視口：原樣 | a 16:9 (or tiny) viewport: as is
+    static uint64_t ph_fr, ph_ser; uint64_t ser = R.rt.color[0] ? R.rt.color[0]->serial : 0, fr = atomic_load(&g_cur_frame);
+    uint64_t key = strtoull(pr->sh[0]->key, 0, 16); int hit = ui_vs_has(key);
+    if (hit) { ph_fr = fr; ph_ser = ser; if (ui_cover_screen(n)) hit = 0; else *open = ui_vs_open(key); }
+    else hit = ser && ph_fr == fr && ph_ser == ser && n != 3;
+    if (!hit) return;
+    if (vw * 9 > vh * 16) { double w = vh * 16 / 9; *bs = w / vw; *bx = vx + (vw - w) / 2 - vx * *bs; }
+    else { double h = vw * 9 / 16; *bt = h / vh; *by = vy + (vh - h) / 2 - vy * *bt; }
+}
 // 當前這次界面繪製是不是「不帶貼圖、正好蓋滿整個界面矩形」（界面矩形佔貼圖上部 hf）
 // Whether the current UI draw is "untextured and exactly covering the whole UI rectangle" (the UI rectangle occupies the upper hf of the texture)
 static int ui_cover_all(double hf) {
@@ -5281,16 +5383,28 @@ frz_plain:;
     // Exception: the untextured block that exactly covers the whole UI rectangle (the dimming when a panel opens, the black curtain of a transition) is changed to cover the whole picture -- the viewport is scaled vertically by 1/h and not moved down, otherwise the 3D outside the UI rectangle is left with a light/dark dividing line.
     // When nobody registered the entry or the UI rectangle is the whole picture (iPhone, Mac default), vo = so = 0, vs = 1, the matrix is not changed, and what follows is word-for-word the same as before.
     long vo = 0, so = 0; double vs = 1, moff = 0;
+    double bx = 0, bs = 1, by = 0, bt = 1; int uopen = 0;   // 界面帶（ui_band）：x' = bx + x·bs，y' = by + y·bt；不進帶時恆等 | UI band (ui_band): x' = bx + x·bs, y' = by + y·bt; identity when not banded
+    ui_band(dw ? dw->count : di->count, tw, th, &bx, &bs, &by, &bt, &uopen);
+    // 能畫出帶外的界面繪製：cb0 換成乘過帶比例的拷貝，視口不縮（vb* 恆等）；拷貝做不出就照舊縮視口 | UI draws that may reach past the band: cb0 swapped for a copy scaled by the band ratio and the viewport left whole (vb* identity); without a copy the viewport shrinks as before
+    uint64_t og = uopen ? ui_open_patch(bs, bt) : 0;
+    if (og || g_ui_open_gpu) g_args_dirty[0] = 1;
+    g_ui_open_gpu = og;
+    double vbx = og ? 0 : bx, vbs = og ? 1 : bs, vby = og ? 0 : by, vbt = og ? 1 : bt;
     if (g_ui_rect_fn && dw && dw->count == 4 && S.nattr == 2 && S.stream[0].stride == 20) { double uy = 0, uh = 1; g_ui_rect_fn(&uy, &uh);
         if (uh > 0 && uh < 1) { if (ui_cover_all(uh)) vs = 1 / uh; else if (uy > 0) { so = lround(uy * th); if (ui_mat_ok()) moff = 2 * uy; else { vo = so; static int n; if (n++ < 4) MLOG("界面下移：投影矩陣這次讀不到，退回挪視口（通道 %llu）", g_stat_pass); } } } }
     if (moff != g_ui_moff) { g_ui_moff = moff; g_args_dirty[0] = 1; }
-    if (S.has_vp) enc_r_viewport(en, (MTLViewport){S.vp[0][0], S.vp[0][1] + vo, S.vp[0][2], S.vp[0][3] * vs, S.dr[0], S.dr[1]});
-    else enc_r_viewport(en, (MTLViewport){0, vo, tw, th * vs, 0, 1});
+    if (S.has_vp) enc_r_viewport(en, (MTLViewport){vbx + S.vp[0][0] * vbs, vby + (S.vp[0][1] + vo) * vbt, S.vp[0][2] * vbs, S.vp[0][3] * vs * vbt, S.dr[0], S.dr[1]});
+    else enc_r_viewport(en, (MTLViewport){vbx, vby + vo * vbt, tw * vbs, th * vs * vbt, 0, 1});
     if (S.depth_clamp != g_enc_clamp) { enc_r_depth_clip(en, !S.depth_clamp); g_enc_clamp = S.depth_clamp; }
     if (passdump()) PD("w %llu 視口 %g,%g,%g,%g 深度 %g–%g 夾限 %d 深度測試 %d/%d 寫 %d", g_stat_pass, S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.dr[0], S.dr[1], S.depth_clamp, S.ds.dt, S.ds.df, S.ds.dw);
     MTLScissorRect sc = {0, 0, tw, th};
     if (R.has_sc) {
         long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y <= 0 ? 0 : R.sc.y + so, x1 = (long)R.sc.x + R.sc.w, y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
+        // 畫出帶外的繪製：剪裁蓋住整個視口就不收進帶（否則又在帶邊裁掉）；真的剪一塊（捲動清單等）才照帶映射 | drawing past the band: a scissor covering the whole viewport is not pulled into the band (it would clip at the band edge again); a real sub-rectangle (scrolling lists etc.) is mapped into the band
+        double cvx = S.has_vp ? S.vp[0][0] : 0, cvy = S.has_vp ? S.vp[0][1] : 0, cvw = S.has_vp ? S.vp[0][2] : tw, cvh = S.has_vp ? S.vp[0][3] : th;
+        int whole = og && R.sc.x <= cvx + 0.5 && R.sc.y <= cvy + 0.5 && R.sc.x + R.sc.w >= cvx + cvw - 0.5 && R.sc.y + R.sc.h >= cvy + cvh - 0.5;
+        if (bs != 1 && !whole) { x0 = lround(bx + x0 * bs); x1 = lround(bx + x1 * bs); }
+        if (bt != 1 && !whole) { y0 = lround(by + y0 * bt); y1 = lround(by + y1 * bt); }
         if (x1 > (long)tw) x1 = tw; if (y1 > (long)th) y1 = th;
         if (x1 <= x0 || y1 <= y0) { PD("Z %llu 繪製跳過：剪裁為空（%d,%d %dx%d，目標 %lux%lu）", g_stat_pass, R.sc.x, R.sc.y, R.sc.w, R.sc.h, (unsigned long)tw, (unsigned long)th); return; }
         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};

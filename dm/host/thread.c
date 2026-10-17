@@ -16,6 +16,8 @@ static void own_key_init(void) { if (pthread_key_create(&g_keyown, own_free)) di
 void guest_thread_init(void) {
     pthread_setspecific(g_keygate, (void *)dm_gate);
     for (int i = 0; i < 2; i++) if (g_keyres[i]) pthread_setspecific(g_keyres[i], (void *)dm_game_res(i));   // 分辨率參數位：{u32 寬, u32 高} 打包 | resolution parameter slot: {u32 width, u32 height} packed
+    if (g_keyresf) pthread_setspecific(g_keyresf, (void *)dm_game_resf());   // 同一尺寸的浮點版：{f32 寬, f32 高} | the same size as floats: {f32 width, f32 height}
+    if (g_keyband) pthread_setspecific(g_keyband, (void *)dm_game_band());   // 界面帶的縮放 | the UI band's scale
     if (g_keyaspect || g_keyaspectui) {   // 寬高比上限參數位：max(19/9, 兩種模式輸出寬 / 高)，float 位模式放低 32 位 | aspect ratio limit parameter slot: max(19/9, output width / height of the two modes), float bit pattern in the low 32 bits
         float a = 19.0f / 9.0f; int wide = 0;
         for (int i = 0; i < 2; i++) { uint64_t r = front_game_res(i); float w = (float)(uint32_t)r, h = (float)(uint32_t)(r >> 32); if (h > 0 && w / h > a) { a = w / h; wide = 1; } }

@@ -1018,6 +1018,7 @@ NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
     memset(o, 0, sizeof *o); o->magic = MAGIC('W', 'I', 'N', 'D'); o->native = s->native; o->ntex = s->ntex; o->interval = s->interval;
     memcpy(o->tex, s->tex, sizeof o->tex);
     for (int i = 0; i < o->ntex; i++) if (o->tex[i]) mtl_xv_window_tex(CTX(o->tex[i])->serial);
+    if (o->ntex && o->tex[0]) { void mtl_ui_band_screen(int w, int h); mtl_ui_band_screen((int)CTX(o->tex[0])->d.width, (int)CTX(o->tex[0])->d.height); }   // 界面帶只對出圖尺寸的目標（nvn_mtl.m ui_band） | the UI band only applies to output-sized targets (nvn_mtl.m ui_band)
     LOG("[nvn] WindowInitialize 交換鏈 %d 張 間隔 %d 首張 %dx%d 格式 %#x", o->ntex, o->interval,
         o->ntex ? (int)CTX(o->tex[0])->d.width : 0, o->ntex ? (int)CTX(o->tex[0])->d.height : 0, o->ntex ? CTX(o->tex[0])->d.format : 0);
     return 1;
