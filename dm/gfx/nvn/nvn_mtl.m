@@ -1665,7 +1665,9 @@ static void passdump_arm(unsigned w, unsigned h) {
     if (!g_pd_tw || g_pd_a0 >= 0 || w != g_pd_tw || h != g_pd_th) return;
     g_pd_a0 = (long)atomic_load(&g_cur_frame) + g_pd_delay; g_pd_a1 = g_pd_a0 + g_pd_count - 1; MLOG("DM_NVN_PASSDUMP：%ux%u 首次出現，轉儲第 %ld–%ld 幀", w, h, g_pd_a0, g_pd_a1);
 }
+static int g_kd_force;   // DM_NVN_KEYDUMP 命中的這次繪製：強開逐綁定記錄（見 kd_draw） | the draw DM_NVN_KEYDUMP matched: force the per-binding records on (see kd_draw)
 static int passdump(void) {
+    if (g_kd_force) return 1;
 #ifdef NVN_RT_RANGE_TEST
     if (g_rr_checking) return 0;
 #endif
@@ -3453,7 +3455,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     // DM_NVN_PASSDUMP：每通道每階段第一次新編時記著色器鍵（K）與各綁定的實際來源（B：UBO 地址 / 長度 / 前 4 個浮點，貼圖號與序號或「啞」）
     // DM_NVN_PASSDUMP: on the first new encode per pass per stage, records the shader key (K) and the actual source of each binding (B: UBO address / length / first 4 floats, texture ID and serial, or 「啞」(dummy))
     static uint64_t bl_pass[6]; static int bl_all = -1; if (bl_all < 0) bl_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;   // 每次新編都記（否則只記每通道每階段第一次） | Record on every new encode (otherwise only the first time per pass per stage)
-    int bl = passdump() && (bl_all || bl_pass[nvn_stage] != g_stat_pass);
+    int bl = passdump() && (bl_all || g_kd_force || bl_pass[nvn_stage] != g_stat_pass);
     if (bl) { bl_pass[nvn_stage] = g_stat_pass; PD("K %llu st%d key=%s nb=%d", g_stat_pass, nvn_stage, sh->key[0] ? sh->key : sh->builtin ? sh->builtin : "?", sh->rf.nb); }
     pthread_mutex_lock(&g_rmu);   // 貼圖 / 採樣器登記表可能正被遊戲線程擴容或改寫 | The texture / sampler registration tables may be being grown or rewritten by the game thread
     for (int i = 0; i < sh->rf.nb; i++) {
@@ -3488,8 +3490,8 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             slots[aid + e] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
             USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // 本段已持 g_rmu | g_rmu is already held in this section
-                if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d（0 最近點 / 1 雙線性；2–5 帶 mip）wrap=%d,%d,%d border=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf,
-                           (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.border[0], sp.border[1], sp.border[2], sp.border[3]); }
+                if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d（0 最近點 / 1 雙線性；2–5 帶 mip）wrap=%d,%d,%d border=%g,%g,%g,%g lod=%g..%g bias=%g aniso=%g cmp=%d/%d %s", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf,
+                           (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.border[0], sp.border[1], sp.border[2], sp.border[3], sp.lod_min, sp.lod_max, sp.lod_bias, sp.aniso, (int)sp.cmp_mode, (int)sp.cmp_func, ss ? "實" : "建不出"); }
             }
         } else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TEXU) {
             // 數組（TEXU）同上；非無綁定的貼圖數組宿主還沒有，元素 1 起給啞貼圖 | arrays (TEXU) as above; the host has no non-bindless texture arrays yet, so elements from 1 on get dummy textures
@@ -3501,10 +3503,10 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (t && g_fbx_n && tid < g_ntreg) { id<MTLTexture> fv = fbx_bind(tid, t); if (fv) { t = fv; trid = fv.gpuResourceID._impl; } }   // 讀自己的附件：改讀開通道前的副本 | reading one's own attachment: read the copy made before the pass
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial);
-            if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu mtl=%p", g_stat_pass, nvn_stage, reg, tid, t ? "實" : "啞", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
+            if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu swz=%d%d%d%d mtl=%p", g_stat_pass, nvn_stage, reg, tid, t ? "實" : "啞", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                        (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth,
                        (unsigned long)(t.parentTexture ? t.parentRelativeLevel : 0), (unsigned long)t.mipmapLevelCount,
-                       (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType, (__bridge void *)(t.parentTexture ? t.parentTexture : t));
+                       (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType, t ? (int)t.swizzle.red : 0, t ? (int)t.swizzle.green : 0, t ? (int)t.swizzle.blue : 0, t ? (int)t.swizzle.alpha : 0, (__bridge void *)(t.parentTexture ? t.parentTexture : t));
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             slots[aid + e] = trid;
             USE(t, MTLResourceUsageRead);
@@ -5088,6 +5090,49 @@ static void fbx_prepare(NvProg *pr) {
         g_fbx_count++;
     }
 }
+// 診斷 DM_NVN_KEYDUMP=<片元著色器鍵前綴>[:<次數，缺省 6>[:<間隔幀數>]]：只盯這一類繪製（真機上用，不必猜幀號）。命中的前 N 次繪製強開 PASSDUMP 的逐綁定行（K / B / d：
+// 貼圖帶格式 / 視圖 / 通道重排，採樣器帶 LOD 夾取），另記 [kd] 行：頂點屬性格式、各頂點流（每頂點流前 4 個頂點、每實例流全部實例）、兩個階段各 uniform 緩衝的全部數值。
+// 同一開關在 Mac 和真機上各跑一次逐項比對，就知道真機上哪個輸入不同（超級馬力歐 3D 世界 + 狂怒世界 1-1 的品紅方塊：粒子 5e4de7561c670fee 只在 iPhone 上出，Mac 復現不了；上游 734a286）
+// Diagnostic DM_NVN_KEYDUMP=<fragment shader key prefix>[:<count, default 6>[:<frame interval>]]: watch only this class of draws (for real devices; no frame number to guess). The first N matching draws force PASSDUMP's per-binding lines on (K / B / d:
+// textures with format / view / channel swizzle, samplers with LOD clamps), plus [kd] lines: vertex attribute formats, each vertex stream (first 4 vertices of per-vertex streams, all instances of per-instance streams) and every value of each uniform buffer of both stages.
+// Run the same switch once on the Mac and once on the device and compare item by item to see which input differs on the device (Super Mario 3D World + Bowser's Fury's magenta squares in 1-1: particle 5e4de7561c670fee, iPhone only, not reproducible on the Mac; upstream 734a286)
+static void kd_floats(const char *what, int reg, uint64_t addr, uint64_t size, uint64_t cap) {
+    void *mb; uint64_t mo; const uint8_t *base;
+    if (!addr || !size) { fprintf(stderr, "[kd]   %s r%d 未綁\n", what, reg); return; }
+    if (!mtl_addr(addr, 1, &mb, &mo) || !(base = [(__bridge id<MTLBuffer>)mb contents])) { fprintf(stderr, "[kd]   %s r%d addr=%#llx 不在內存池\n", what, reg, (unsigned long long)addr); return; }
+    uint64_t n = MIN(size, cap) / 4; const float *v = (const float *)(base + mo);
+    fprintf(stderr, "[kd]   %s r%d addr=%#llx size=%llu%s\n", what, reg, (unsigned long long)addr, (unsigned long long)size, pend_hits(addr, size) ? "（本提交裡還有待執行的寫）" : "");
+    for (uint64_t i = 0; i < n; i += 16) {
+        char line[1024]; size_t o = 0;
+        for (uint64_t k = i; k < n && k < i + 16 && o < sizeof line - 24; k++) o += snprintf(line + o, sizeof line - o, " %.6g", v[k]);
+        fprintf(stderr, "[kd]     +%#06llx%s\n", (unsigned long long)(i * 4), line);
+    }
+}
+static int kd_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
+    static char key[24]; static int left = -1, every; static uint64_t last = ~0ull;
+    if (left < 0) { left = 0; const char *e = getenv("DM_NVN_KEYDUMP");
+        if (e && *e) { size_t n = strcspn(e, ":"); if (n > 23) n = 23; memcpy(key, e, n); key[n] = 0; const char *c = strchr(e, ':'); left = c ? atoi(c + 1) : 6; every = c && strchr(c + 1, ':') ? atoi(strchr(c + 1, ':') + 1) : 0;
+            MLOG("DM_NVN_KEYDUMP：片元著色器 %s 的 %d 次繪製逐項記錄%s（[kd] / [pass] 行）", key, left, every ? "，每隔這麼多幀最多記一次" : ""); } }
+    if (left <= 0 || !pr->sh[1] || strncmp(pr->sh[1]->key, key, strlen(key))) return 0;
+    uint64_t fr = atomic_load(&g_cur_frame);
+    if (every > 0 && last != ~0ull && fr < last + (uint64_t)every) return 0;   // 每 every 幀最多記一次：一局裡分散取樣，不必猜畫面在哪一幀 | at most once every `every` frames: samples spread over the session, no need to guess the frame of the scene
+    last = fr; left--;
+    int count = dw ? dw->count : di->count, inst = dw ? dw->instances : di->instances, first = dw ? dw->first : 0, binst = dw ? dw->base_instance : di->base_instance;
+    fprintf(stderr, "[kd] F%llu 通道 %llu vs=%s fs=%s 圖元 %d 頂點 %d 實例 %d 起點 %d 基頂點 %d 基實例 %d 目標 %s\n", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass,
+            pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1]->key, dw ? dw->prim : di->prim, count, inst, first, di ? di->base_vertex : 0, binst, R.rt.n && R.rt.color[0] ? "有" : "無");
+    for (int i = 0; i < S.nattr && i < 16; i++) fprintf(stderr, "[kd]   屬性 %d 格式 %#x 偏移 %u 流 %u\n", i, (unsigned)S.attr[i].fmt, (unsigned)S.attr[i].offset, (unsigned)S.attr[i].stream);
+    for (int s_ = 0; s_ < S.nstream && s_ < 16; s_++) {
+        uint32_t st = S.stream[s_].stride, dv = S.stream[s_].divisor;
+        fprintf(stderr, "[kd]   流 %d 步長 %u 除數 %u 緩衝 %#llx 大小 %llu\n", s_, st, dv, (unsigned long long)S.vbuf[s_].address, (unsigned long long)S.vbuf[s_].size);
+        if (!S.vbuf[s_].address || !st) continue;
+        uint64_t from = (uint64_t)(dv ? binst : (di ? di->base_vertex : first)) * st, n = (uint64_t)st * (dv ? (uint64_t)MIN(inst, 8) : 4);
+        if (from < S.vbuf[s_].size) kd_floats("流", s_, S.vbuf[s_].address + from, MIN(n, S.vbuf[s_].size - from), 512);
+    }
+    for (int stg = 0; stg < 2; stg++) { NvShader *sh = pr->sh[stg]; if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].kind == NVN_RB_CBUF && sh->rf.b[i].reg < 16) {
+            const p_bind_buf *u = &S.ubo[stg][sh->rf.b[i].reg]; kd_floats(stg ? "片元 uniform" : "頂點 uniform", sh->rf.b[i].reg, u->addr, u->size, 4096); } }
+    return 1;
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "繪製前沒有綁定程序"); PD("Z %llu 繪製跳過：沒有綁定程序", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
@@ -5266,6 +5311,7 @@ frz_plain:;
     static id<MTLBuffer> zero; if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     static uint64_t zero_gpu; if (!zero_gpu) zero_gpu = zero.gpuAddress;
     enc_r_vbuf(en, 30, zero_gpu);
+    g_kd_force = kd_draw(pr, dw, di);
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
     // 參數綁定在登記表鎖內捕獲實際資源；資格判斷到綁定期間有版本變化，則在任何GPU draw前切開重試。
@@ -5297,7 +5343,7 @@ frz_plain:;
     if (enc_label_on() && !g_el_draws++ && pr->sh[1]) { memcpy(g_el_key, pr->sh[1]->key, 8); g_el_key[8] = 0; }
     if (passdump()) {   // 通道首次繪製的特徵（判讀入是否可省：全屏、無混合、寫滿通道、不依賴深度）；DM_NVN_PASSDUMP_ALL 時每次繪製都記 | Characteristics of a render pass's first draw (to judge whether the load can be omitted: full screen, no blending, writes all channels, does not depend on depth); with DM_NVN_PASSDUMP_ALL every draw is recorded
         static uint64_t last_pass = ~0ull; static int all = -1; if (all < 0) all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
-        if (all) PD("d %llu bv=%d bi=%d first=%d vs=%s fs=%s vc=%d inst=%d blend=%#x b0=%#llx dt=%d dw=%d df=%d cull=%d st=%d sf=%d,%d sop=%d,%d,%d/%d,%d,%d smask=%#x,%#x/%#x,%#x sref=%#x,%#x ib=%#llx it=%d cmask=%#x b1=%#llx b2=%#llx b3=%#llx", g_stat_pass, di ? di->base_vertex : 0, di ? di->base_instance : 0, dw ? dw->first : 0, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-",
+        if (all || g_kd_force) PD("d %llu bv=%d bi=%d first=%d vs=%s fs=%s vc=%d inst=%d blend=%#x b0=%#llx dt=%d dw=%d df=%d cull=%d st=%d sf=%d,%d sop=%d,%d,%d/%d,%d,%d smask=%#x,%#x/%#x,%#x sref=%#x,%#x ib=%#llx it=%d cmask=%#x b1=%#llx b2=%#llx b3=%#llx", g_stat_pass, di ? di->base_vertex : 0, di ? di->base_instance : 0, dw ? dw->first : 0, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-",
                     dw ? dw->count : di->count, dw ? dw->instances : di->instances, S.color.blend_en, (unsigned long long)*(uint64_t *)&S.blend[0], (int)S.ds.dt, (int)S.ds.dw, (int)S.ds.df, (int)S.poly.cull,
                     (int)S.ds.st, (int)S.ds.sf_f, (int)S.ds.sf_b, (int)S.ds.fail_f, (int)S.ds.zfail_f, (int)S.ds.zpass_f,
                     (int)S.ds.fail_b, (int)S.ds.zfail_b, (int)S.ds.zpass_b, S.st_vmask[0], S.st_vmask[1], S.st_wmask[0], S.st_wmask[1], S.st_ref[0], S.st_ref[1],
@@ -5338,6 +5384,7 @@ frz_plain:;
                S.has_vp ? S.vp[0][0] : 0, S.has_vp ? S.vp[0][1] : 0, S.has_vp ? S.vp[0][2] : (float)tw, S.has_vp ? S.vp[0][3] : (float)th);
         }
     }
+    g_kd_force = 0;
     if (rt_range_on() && !rt_range_pr_ro(pr)) g_pass.range_external=1;
     rt_range_note_depth();
 #ifdef NVN_RT_RANGE_TEST
