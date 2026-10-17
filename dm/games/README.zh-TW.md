@@ -37,8 +37,14 @@
 | `zip_store` | IPA 裡不再壓縮的擴展名 |
 | `mem_reserve`、`mem_alias`、`mem_stack`、`app_pool` | 客體地址空間分區與應用內存池（`hle_svc.c`） |
 | `present_interval` | `game`（缺省）：按遊戲設的出圖間隔出幀，同 Switch（遊戲設 2 就是 30 幀，iOS 上顯示節拍隨之 30 Hz；《朋友收集》設 2，它的可選改寫剪口 `fps60` 讓它設 1，見 `dm/tools/patch_nso.py`）。`display`：不管遊戲設多少，每個顯示節拍一幀——只適合邏輯不按幀計數的遊戲（D2R 的邏輯按自己的 25 Hz 走）。`DM_PRESENT_INTERVAL=game` / `display` 可覆蓋，也可寫在 `Documents/env.txt` |
+| `core_preempt` | `on` / `off`（缺省）：近似 Horizon 的按核搶佔。一次 SVC 叫醒了釘在調用線程本核、優先級更高的線程，或這類線程本就在跑，調用線程就等它們再次阻塞（最多 5 ms，`hle_thread.c`）。上游銀河戰士 生存恐懼的影片播放器靠它；馬力歐開了讀盤變慢（首幀 0.6 → 2.9 s），所以只有需要的遊戲才開。`DM_PREEMPT=0` / `1` 可覆蓋 |
+| `shared_font` | 共享字體地址處放什麼：`bfttf`（缺省）= 8 字節 BFTTF 頭（「已解」標記）+ TTF，馬力歐拿去調 `ScalableFontEngineHelper::Decode`；`ttf` = TTF 本身，上游的超級馬力歐 3D 世界 + 狂怒世界（SDK 10）直接交給 `ScalableFontEngine::LoadFont`（帶頭時引擎報錯 403，遊戲查字形時崩潰） |
+| `pad_layout` | iPhone 虛擬手柄首次的佈局：`simple`（缺省）= 2D（左搖桿、A/B/X/Y、肩鍵、− / +），`full` = 3D（另加十字鍵、右搖桿、L3 / R3）。頂邊正中的佈局鍵在遊戲裡切換，App 記住玩家的選擇（`DmGamepad.m`） |
+| `device_api` | `nvnDeviceGetInteger` 報的 NVN API 版本 `主.次`（缺省 `55.15`，馬力歐與《朋友收集》都接受）。遊戲會核對，不符就不建設備：超級馬力歐 3D 世界 + 狂怒世界（SDK 10）要求主版本 53、次版本 ≥ 313。`DM_NVN_API` 可改。不進著色器翻譯鏈版本（只有 `nvn_*` / `shader_*` 鍵進） |
 | `nvn_tex_base`、`nvn_tex_slots`、`nvn_samp_base`、`nvn_img_base`、`nvn_img_slots`、`nvn_ssbo_bases` | NVN 驅動常量段，按全庫著色器實測 |
 | `shader_groups`、`shader_note` | `shader_split.py` 的來源組與映射表表頭說明 |
+| `shader_main_glslc` | `on` / `off`（缺省）：`shader_split.py` 另讀 `main` 裡的 GLSLC 編譯輸出（魔數 `0x19866891`）。上游十三機兵防衛圈的著色器全在那裡；Engage 的 `main` 裡有 11 份用不到的，所以別的遊戲不開 |
+| `shader_separable` | `on` / `off`（缺省）：遊戲建單階段程序、繪製時按階段拼，真正的頂點 / 像素配對只在運行時才有。`shader_split.py` 於是給每個頂點著色器配一組「覆蓋」——讀到的輸入合起來等於全部像素著色器讀的輸入的像素著色器，`dmsh_build.py` 的 `vs_pad` 讓每個頂點著色器能接任何像素著色器（上游十三機兵防衛圈）。檔案一設這兩個鍵就進著色器翻譯鏈版本 |
 
 翻譯器（`dmsh_xlate/Program.cs`）裡仍內置貼圖 / 採樣器句柄表基址與深度口徑。檔案的 `nvn_tex_base` / `nvn_samp_base` 與之不同時 `dmsh_build.py` 會停下，所以需要別的值的遊戲要先讓翻譯器可配。
 
