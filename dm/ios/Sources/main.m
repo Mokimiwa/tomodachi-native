@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include "game_profile.h"   // 遊戲檔案常數（RomFS 認定路徑） | game profile constants (the RomFS marker path)
+#include "duo_shell.h"      // 遊戲語言、存檔待辦、主畫面快速動作 | game language, pending save actions, Home Screen quick actions
 
 int dm_main(int argc, char **argv);   // dm/host/main.c 以 -Dmain=dm_main 編入 | dm/host/main.c compiled in with -Dmain=dm_main
 void dm_host_preload_start(int argc, char **argv);
@@ -30,12 +31,13 @@ static int boot_env(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
     NSString *res = NSBundle.mainBundle.resourcePath;
-    for (NSString *d in @[@"save", @"temp"]) [fm createDirectoryAtPath:[doc stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
     // 日誌：宿主只寫 stderr；重定向到 Documents/log.txt（上一次的留作 log.prev.txt），出問題時從「文件」App 取
     // Log: the host only writes to stderr; redirect it to Documents/log.txt (the previous one is kept as log.prev.txt), retrieve it from the Files app when something goes wrong
     NSString *log = [doc stringByAppendingPathComponent:@"log.txt"], *prev = [doc stringByAppendingPathComponent:@"log.prev.txt"];
     [fm removeItemAtPath:prev error:nil]; [fm moveItemAtPath:log toPath:prev error:nil];
     if (freopen(log.fileSystemRepresentation, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
+    duo_save_apply_pending();   // 設定裡排好的「還原」「從頭開始」：在宿主掛存檔之前做（DuoSave.m） | Restore / Start Over scheduled in the settings: done before the host mounts the save (DuoSave.m)
+    for (NSString *d in @[@"save", @"temp"]) [fm createDirectoryAtPath:[doc stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
     // 環境開關文件（真機診斷用，側載裝的包沒法從外面設環境變量）：每行 KEY=VALUE，# 開頭為注釋；Documents/env.txt 優先於包內 dm/env.txt（build_ipa.sh 的 DM_ENV_FILE 放進去）
     // Environment switch files (for on-device diagnostics: a sideloaded app cannot be given environment variables from outside): one KEY=VALUE per line, # starts a comment; Documents/env.txt takes precedence over dm/env.txt in the bundle (put there by build_ipa.sh's DM_ENV_FILE)
     for (NSString *ef in @[[doc stringByAppendingPathComponent:@"env.txt"], [[res stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"env.txt"]]) {
@@ -47,6 +49,13 @@ static int boot_env(void) {
             if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); fprintf(stderr, "boot: 環境 %s=%s（%s）\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
         }
     }
+    // 開機保護：上次沒開起來又改過開機設定就改回能開的（DuoPanel.m）；原先的前端（DM_FRONT=classic）不走外殼，不記 | safe boot: when the last boot never came up and boot settings had changed, put them back (DuoPanel.m); the previous front end (DM_FRONT=classic) skips it
+    { const char *fr = getenv("DM_FRONT"); if (!fr || strcmp(fr, "classic")) duo_boot_guard_begin(); }
+    // 遊戲語言（DM_LANG，地區跟著它，hle_sdk20.c）：本 App 設定 GameLanguage > 系統首選語言，對法同 Mac 啓動器（DuoPanel.m duo_lang_code）。沒設時宿主報 zh-Hans，iPad 第一次開就成了簡體中文
+    // The game language (DM_LANG; the region follows it, hle_sdk20.c): this app's GameLanguage setting > the system's preferred language, mapped as the Mac launcher does (DuoPanel.m duo_lang_code). Unset, the host reports zh-Hans, which made the iPad's first launch Simplified Chinese
+    if (!getenv("DM_LANG")) { const char *l = duo_lang_code().UTF8String; setenv("DM_LANG", l, 0); fprintf(stderr, "boot: 遊戲語言 %s（系統首選 %s）\n", l, (NSLocale.preferredLanguages.firstObject ?: @"?").UTF8String); }   // env.txt 給了就用它 | env.txt wins when it sets one
+    // 幀率：設定 FrameRate 是 60 就開可選剪口 fps60（同 Mac 啓動器；iOS 上由裝載器換上內嵌的那頁，loader.c embed_options） | frame rate: FrameRate 60 turns on the optional cut fps60 (as the Mac launcher does; on iOS the loader swaps in the embedded page, loader.c embed_options)
+    if (!getenv("DM_OPTIONS") && [NSUserDefaults.standardUserDefaults integerForKey:@"FrameRate"] == 60) { setenv("DM_OPTIONS", "fps60", 0); fprintf(stderr, "boot: 幀率 60 FPS（設定）\n"); }
     NSString *romfs = romfs_locate();
     if (!romfs) { fprintf(stderr, "boot: 沒找到遊戲文件（<App>/romfs 或 Documents/romfs）\n"); return 0; }
     fprintf(stderr, "boot: 遊戲文件 %s\n", romfs.fileSystemRepresentation);
@@ -98,6 +107,10 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window.rootViewController = front_ios_root();
     [self.window makeKeyAndVisible];
+    if (o.shortcutItem) duo_shell_shortcut(o.shortcutItem);   // 從主畫面圖示的選單開的：開場後打開那頁設定 | opened from the Home Screen icon's menu: open that settings page after the opening
+}
+- (void)windowScene:(UIWindowScene *)ws performActionForShortcutItem:(UIApplicationShortcutItem *)item completionHandler:(void (^)(BOOL))done {
+    duo_shell_shortcut(item); done(YES);   // 已在執行：遊戲暫停並打開那頁 | already running: pause the game and open that page
 }
 - (void)sceneWillResignActive:(UIScene *)s { front_ios_focus_event(0); }
 - (void)sceneDidEnterBackground:(UIScene *)s { front_ios_focus_event(1); }

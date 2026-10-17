@@ -368,3 +368,33 @@ void dm_gamepad_reset(void) {   // 失活時：鬆開所有鍵（按著鍵切走
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
     pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish();
 }
+
+// ---- Duo 外殼（DuoShell.m / DuoPad.m）用：觸控手把與實體手把合併，不建這裡的虛擬手柄視圖 | For the Duo shell (DuoShell.m / DuoPad.m): touch controller merged with physical controllers, without this file's virtual gamepad view ----
+// DuoPad 的鍵位與 DM_BTN_* 同（= 這裡的 B_* 位序），直接當觸控狀態存，實體手把推著的搖桿優先（同 publish）
+// DuoPad's bits are DM_BTN_* (= the B_* bit order here), stored straight as the touch state; a tilted physical stick wins (as in publish)
+void duo_pad_publish(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    pthread_mutex_lock(&g_mu);
+    g_touch_btn = b; g_touch_lx = lx; g_touch_ly = ly; g_touch_rx = rx; g_touch_ry = ry;
+    pthread_mutex_unlock(&g_mu);
+    publish();
+}
+static void (^g_pads_changed)(BOOL any);
+static void pads_refresh(void) {   // 同 padsChanged，但不碰視圖：有沒有手把交給回調（主線程） | as padsChanged, without a view: whether any controller is connected goes to the callback (main thread)
+    BOOL any = NO;
+    for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
+        any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
+        read_pad(c.extendedGamepad);
+    }
+    if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+    void (^cb)(BOOL) = g_pads_changed;
+    if (cb) dispatch_async(dispatch_get_main_queue(), ^{ cb(any); });
+}
+void dm_gamepad_watch(void (^changed)(BOOL any)) {   // 開始看實體手把的接上 / 拔掉；changed 在主線程收到「現在有沒有手把」 | start watching physical controllers connect / disconnect; changed gets "is one connected now" on the main thread
+    g_pads_changed = [changed copy];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (NSNotificationName n in @[GCControllerDidConnectNotification, GCControllerDidDisconnectNotification])
+            [NSNotificationCenter.defaultCenter addObserverForName:n object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *x) { (void)x; pads_refresh(); }];
+    });
+    pads_refresh();
+}
