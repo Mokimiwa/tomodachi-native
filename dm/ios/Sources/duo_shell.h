@@ -19,6 +19,7 @@ enum {
 static inline UIColor *duo_rgb(uint32_t c) { return [UIColor colorWithRed:(c >> 16 & 255) / 255.0 green:(c >> 8 & 255) / 255.0 blue:(c & 255) / 255.0 alpha:1]; }
 UIFont *duo_font(CGFloat size, UIFontWeight weight);   // 圓體（遊戲字型的近似） | rounded system font (close to the game's typeface)
 UIImage *duo_asset(NSString *name);                     // 包內 duo/<name>.png，沒有 = nil | duo/<name>.png in the bundle, nil when missing
+UIImage *duo_band_image(CGSize size, CGFloat scale);   // 底部波浪帶（遊戲的波浪 + 塗鴉，取自遊戲檔案；沒有就是 nil） | the bottom wave band (the game's wave + doodles from the game files; nil without them)
 
 // 遊戲那種鍵：白面、灰色下緣、深黃落影；按下時面往下沉、蓋住下緣。字或圖標放在 content 裡，跟著面一起動
 // A key in the game's style: white face, grey lower edge, darker-yellow shadow; pressing sinks the face over the edge. Labels or icons go in content and move with the face

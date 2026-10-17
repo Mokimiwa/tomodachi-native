@@ -47,7 +47,7 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: ${DM_BUNDLE_ID}
       PRODUCT_NAME: DuoPreview
       HEADER_SEARCH_PATHS: $(SRCROOT)/../host   # dm_input.h / front.h
-      TARGETED_DEVICE_FAMILY: "1"
+      TARGETED_DEVICE_FAMILY: "1,2"   # iPad 也能開，看 iPad 形狀的版面 | runs on iPad too, for checking the iPad-shaped layout
       ASSETCATALOG_COMPILER_APPICON_NAME: $(DM_APPICON)
       CLANG_ENABLE_OBJC_ARC: YES
       GCC_C_LANGUAGE_STANDARD: gnu11

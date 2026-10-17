@@ -214,10 +214,10 @@ static CGImageRef grey_mask(UIImage *img, CGSize px, CGFloat tileH, CGFloat tile
         for (CGFloat x = x0 - ceil(x0 / tileW) * tileW; x < px.width; x += tileW) CGContextDrawImage(c, CGRectMake(x, y, tileW, tileH), img.CGImage);
     CGImageRef m = CGBitmapContextCreateImage(c); CGContextRelease(c); return m;
 }
-- (UIImage *)bandImage:(CGSize)size {
+UIImage *duo_band_image(CGSize size, CGFloat s) {   // 介面在 duo_shell.h；設定面板也用 | interface in duo_shell.h; the settings panel uses it too
     UIImage *wave = duo_asset(@"wave"), *doodle = duo_asset(@"doodle");
     if (!wave || size.width <= 0 || size.height <= 0) return nil;
-    CGFloat s = self.traitCollection.displayScale; CGSize px = CGSizeMake(round(size.width * s), round(size.height * s));
+    CGSize px = CGSizeMake(round(size.width * s), round(size.height * s));
     CGFloat ww = wave.size.width * px.height / wave.size.height;   // 波浪貼圖的高 = 帶高 | the wave texture's height = the band's height
     CGImageRef wm = grey_mask(wave, px, px.height, ww, (px.width - ww) / 2);
     CGImageRef dm = doodle ? grey_mask(doodle, px, px.height * 3.5, px.height * 3.5, 0) : NULL;   // 塗鴉圖案約帶高的 3.5 倍一格 | one doodle tile is about 3.5 times the band's height
@@ -232,6 +232,8 @@ static CGImageRef grey_mask(UIImage *img, CGSize px, CGFloat tileH, CGFloat tile
     CGImageRelease(wm); CGImageRelease(dm);
     return out;
 }
+
+- (UIImage *)bandImage:(CGSize)size { return duo_band_image(size, self.traitCollection.displayScale); }
 
 // 倒影：靜態圖時從圖算（遊戲接上後改由呈現時每幀畫，見 ios-plan） | the reflection: computed from the still image (once the game is wired in it is drawn at present time each frame, see ios-plan)
 - (void)setStill:(UIImage *)image {
