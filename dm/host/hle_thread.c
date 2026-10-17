@@ -509,6 +509,19 @@ void svc_thread_dump(void) {
     }
 }
 
+// 準時睡到 dl（宿主單調鐘 ns）：macOS 的 nanosleep / mach_wait_until 都帶定時器鬆弛，實測 33 ms 睡成約 36.4 ms、5 ms 睡成 6.1 ms、1 ms 睡成 1.26 ms（任何 QoS 都一樣）。
+// 銀河戰士 生存恐懼的音效線程按「33 ms 減本輪耗時」睡（main+0xf95b0），宿主上週期成了 36.9 ms；過場動畫按這條線程更新的音頻播放位置出幀，於是只有約 27 幀（Switch 上 30）。
+// 每次只睡餘下時間的 3/4（鬆弛最多約 25%，不會睡過頭），循環到差 20 µs 以內：33 ms 的睡眠約 4 次系統調用、誤差幾十微秒，不空轉（上游 a9c56fd）
+// Sleep until dl (host monotonic ns) on time: macOS nanosleep / mach_wait_until carry timer slack; measured, 33 ms sleeps take about 36.4 ms, 5 ms take 6.1 ms, 1 ms take 1.26 ms (the same at any QoS).
+// Metroid Dread's sound thread sleeps "33 ms minus this round's work" (main+0xf95b0), and on the host its period became 36.9 ms; cutscenes render a frame whenever the audio play position that thread updates moves, so they ran at about 27 fps (30 on the Switch).
+// Each step sleeps only 3/4 of the remaining time (the slack is at most about 25%, so it never oversleeps), looping until within 20 µs: a 33 ms sleep takes about 4 system calls with an error of tens of microseconds, and nothing spins (upstream a9c56fd)
+static void sleep_precise(uint64_t dl) {
+    for (int i = 0; i < 16; i++) {
+        uint64_t now = now_ns(); if (now + 20000 >= dl) return;
+        uint64_t rem = dl - now, s = rem < 100000 ? rem : rem - rem / 4;
+        struct timespec ts = {(time_t)(s / 1000000000u), (long)(s % 1000000000u)}; nanosleep(&ts, 0);
+    }
+}
 int svc_thread(int num, uint64_t *regs) {
     { thr_t *me = pthread_getspecific(g_keythr); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->nsvc++; } }
     if (g_flag.thr && num != 0x0B) { thr_t *me = pthread_getspecific(g_keythr); LOG("[%#x] svc %#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx", me ? me->handle : 0, num, regs[0], regs[1], regs[2], regs[3]); }
@@ -545,7 +558,7 @@ int svc_thread(int num, uint64_t *regs) {
         if (ns > 0 && dm_detclock_enabled()) {
             uint64_t deadline = guest_ns() + (uint64_t)ns;
             while (guest_ns() < deadline) { struct timespec ts = {0, 1000000}; nanosleep(&ts, 0); }
-        } else if (ns > 0) { struct timespec ts = {ns / 1000000000, ns % 1000000000}; nanosleep(&ts, 0); }
+        } else if (ns > 0) sleep_precise(now_ns() + (uint64_t)ns);
         else {   // 讓出（0 / -1 / -2）。主線程的讓出次數與耗時記賬：遊戲渲染任務圖「等全部做完」是純輪詢 + 讓出（main+0x15ee898），量它佔一幀多少 | Yield (0 / -1 / -2). Count and time of the main thread's yields are recorded: the game's render task graph "wait for everything to finish" is pure polling + yield (main+0x15ee898); measure how much of a frame it takes
             thr_t *me = pthread_getspecific(g_keythr);
             if (me && me->handle == 0x1001) { uint64_t y0 = now_ns(); sched_yield(); g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }

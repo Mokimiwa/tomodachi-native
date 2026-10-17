@@ -40,14 +40,16 @@ void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry
     uint64_t old = atomic_exchange(&g_pad_btn, buttons); atomic_fetch_or(&g_pad_latch, buttons & ~old); atomic_store(&g_pad_axes, pack(lx, ly, rx, ry));
 }
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
-// DM_KEYS 腳本輸入（測試用）："秒:控制項[+控制項][~按住秒],…"（秒寫成 f幀號 = 等到第幾個出圖幀），例 "8:A,12:A,15:Down~0.5,16:A+B,20:StickLUp~2,23:StickRLeft=0.5~1,30:Touch=640/360"。
+// DM_KEYS 腳本輸入（測試用）："秒:控制項[+控制項][~按住秒][*次數/間隔],…"（秒寫成 f幀號 = 等到第幾個出圖幀），例 "8:A,12:A,15:Down~0.5,16:A+B,20:StickLUp~2,23:StickRLeft=0.5~1,30:Touch=640/360,40:A*80/2"。
 //   控制項是 Switch 的名字（dm_bind.h：按鍵、搖桿方向帶幅度、Touch=x/y 面板坐標），不經玩家的鍵位表。缺省按住 0.15 s。
+//   *次數/間隔：同一步重複，間隔按秒（f 幀號那種按幀，缺省 1），例 40:A*80/2 = 40 s 起每 2 s 按一次 A，共 80 次；最多 1024 步（重複展開後計，上游 a9c56fd）。
 //   按鍵與搖桿走手柄那一路（dm_pad_set），與鍵盤 / 觸屏按位或；觸屏點用腳本自己的手指槽（front.h），不抬起前端的手指。時間從宿主啓動算起
-// DM_KEYS scripted input (for tests): "seconds:control[+control][~hold seconds],..." (seconds written as f<frame> = wait for that presented frame), e.g. "8:A,12:A,15:Down~0.5,16:A+B,20:StickLUp~2,23:StickRLeft=0.5~1,30:Touch=640/360".
+// DM_KEYS scripted input (for tests): "seconds:control[+control][~hold seconds][*count/interval],..." (seconds written as f<frame> = wait for that presented frame), e.g. "8:A,12:A,15:Down~0.5,16:A+B,20:StickLUp~2,23:StickRLeft=0.5~1,30:Touch=640/360,40:A*80/2".
 //   Controls are Switch names (dm_bind.h: buttons, stick directions with an amount, Touch=x/y in panel coordinates) and bypass the player's key table. Held 0.15 s by default.
+//   *count/interval: the step repeats, the interval in seconds (in frames for f<frame> steps, default 1), e.g. 40:A*80/2 = A every 2 s from 40 s on, 80 times; at most 1024 steps (counted after repeats are expanded, upstream a9c56fd).
 //   Buttons and sticks go through the controller path (dm_pad_set), ORed with keyboard / touch; touch points use the script's own finger slots (front.h) and do not lift the front end's fingers. Times are counted from host start
 typedef struct { double at, hold; long frame; dm_ctl ctl; } key_step;   // frame ≥ 0：按出圖幀號等，不看秒（機器忙時遊戲進度跟著幀走） | frame >= 0: wait for that presented frame instead of seconds (on a busy machine the game's progress follows frames)
-static key_step g_steps[256]; static int g_nsteps;
+static key_step g_steps[1024]; static int g_nsteps;
 static void step_apply(const dm_ctl *c) {
     uint64_t b = 0; int32_t a[4] = {0}; int n = c != NULL;
     dm_ctl_combine(&c, NULL, n, &b, a); dm_pad_set(b, a[0], a[1], a[2], a[3]);
@@ -78,9 +80,15 @@ void hid_keys_init(void) {
         if (g_nsteps == (int)(sizeof g_steps / sizeof *g_steps)) { LOG("【紅】DM_KEYS 超過 %d 步，後面的不收", g_nsteps); break; }
         char *c = strchr(tok, ':'); if (!c) { LOG("【紅】DM_KEYS 步驟缺「秒:」：%s", tok); continue; }
         *c = 0; key_step st = {atof(tok), 0.15, tok[0] == 'f' ? atol(tok + 1) : -1, {0}};
+        int rep = 1; double every = 1;
+        char *r = strchr(c + 1, '*'); if (r) { *r = 0; rep = atoi(r + 1); char *sl = strchr(r + 1, '/'); if (sl) every = atof(sl + 1); if (rep < 1) rep = 1; }
         char *h = strchr(c + 1, '~'); if (h) { *h = 0; st.hold = atof(h + 1); }
         if (dm_ctl_parse(c + 1, &st.ctl)) LOG("【紅】DM_KEYS %s 秒那步有不認識的控制項（認識的照按）", tok);
-        g_steps[g_nsteps++] = st;
+        for (int i = 0; i < rep && g_nsteps < (int)(sizeof g_steps / sizeof *g_steps); i++) {
+            g_steps[g_nsteps] = st;
+            if (st.frame >= 0) g_steps[g_nsteps].frame = st.frame + (long)(i * every); else g_steps[g_nsteps].at = st.at + i * every;
+            g_nsteps++;
+        }
     }
     pthread_t th; if (g_nsteps && !pthread_create(&th, NULL, keys_main, NULL)) { pthread_detach(th); LOG("DM_KEYS：%d 步", g_nsteps); }
 }

@@ -272,6 +272,30 @@ static int rom_overlay_path(const mount_t *m, const char *rest, char *out, size_
     if (found) return 1;
     errno = ENOENT; return 0;
 }
+// 掛載名之後的路徑按 Horizon 的 PathNormalizer 字面規整：去掉「.」、「..」退一級，退出根即錯（同真機 ResultDirectoryUnobtainable，這裡報不存在）。
+// 銀河戰士 生存恐懼的流式音頻路徑是「rom:/system/snd/../../sounds/streams/…」：以前遇「..」就報不存在，Atk 的流加載任務拿到意外的錯誤碼中止（main+0x1225a8c）
+// The path after the mount name is normalized lexically as Horizon's PathNormalizer does: "." is dropped, ".." goes up one level, and going above the root is an error (ResultDirectoryUnobtainable on hardware, reported here as not found).
+// Metroid Dread's stream sound paths are "rom:/system/snd/../../sounds/streams/...": ".." used to be reported as not found, and Atk's stream load task got an unexpected error code and aborted (main+0x1225a8c)
+static int norm_rest(const char *rest, char *out, size_t n) {
+    size_t len = 0; out[0] = 0;
+    while (*rest) {
+        while (*rest == '/') rest++;
+        if (!*rest) break;
+        const char *end = strchr(rest, '/'); if (!end) end = rest + strlen(rest);
+        size_t k = end - rest;
+        if (k == 2 && rest[0] == '.' && rest[1] == '.') {
+            if (!len) { errno = ENOENT; return 0; }
+            while (len && out[len - 1] != '/') len--;
+            if (len) len--;
+            out[len] = 0;
+        } else if (!(k == 1 && rest[0] == '.')) {
+            if (len + 1 + k + 1 > n) { errno = ENAMETOOLONG; return 0; }
+            out[len++] = '/'; memcpy(out + len, rest, k); len += k; out[len] = 0;
+        }
+        rest = end;
+    }
+    return 1;
+}
 // create 只准最後一段尚不存在；中間目錄仍需精確命中。
 // create only allows the last component to not exist yet; intermediate directories still need an exact match.
 static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create) {
@@ -281,7 +305,8 @@ static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create)
     for (int i = 0; i < g_nmnt; i++) {
         if (strlen(g_mnt[i].name) != ln || strncmp(g_mnt[i].name, p, ln)) continue;
         if (ro) *ro = g_mnt[i].ro;
-        const char *rest = c + 1;
+        char normed[1024]; const char *rest = c + 1;
+        if (strstr(rest, "/.")) { if (!norm_rest(rest, normed, sizeof normed)) return 0; rest = normed; }   // 只有含「.」段的路徑才規整，其餘照舊逐段走 | only paths with "." components are normalized; the rest walk component by component as before
         if (g_mnt[i].overlay[0] && !create) return rom_overlay_path(&g_mnt[i], rest, out, n);
         strlcpy(out, g_mnt[i].dir, n);
         while (*rest) {
