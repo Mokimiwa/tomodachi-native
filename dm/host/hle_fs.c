@@ -513,6 +513,16 @@ const char *dm_save_workdir(void) { for (int i = 0; i < g_nmnt; i++) if (g_mnt[i
 // 事務式存檔的已提交目錄（盤上那份，上次 Commit 的版本）。沒掛載存檔時返回 NULL
 // The committed directory of the transactional save (the copy on disk, the version from the last Commit). Returns NULL when no save is mounted
 const char *dm_save_commitdir(void) { for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].commit[0]) return g_mnt[i].commit; return NULL; }
+// 已提交版的快照（介面在 dm.h）：持著與 Commit 同一把鎖，不會拍到原子互換做到一半的目錄；前端的「立即備份」「匯出」用
+// A snapshot of the committed version (interface in dm.h): holds the same lock as Commit, so it never catches a directory halfway through the atomic swap; used by the front end's Back Up Now and Export
+int dm_save_snapshot(const char *dst) {
+    PATH_LOCK(); pthread_mutex_lock(&g_lock);
+    int r = -1;
+    for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].commit[0]) { r = clonefile(g_mnt[i].commit, dst, 0) ? (errno ? errno : EIO) : 0; break; }
+    pthread_mutex_unlock(&g_lock);
+    if (r > 0) LOG("【紅】存檔快照：clonefile → %s 失敗 errno=%d", dst, r); else if (!r) LOG("存檔快照：→ %s", dst);
+    return r;
+}
 void (*g_dm_mount_seed_hook)(const char *save_dir);   // 掛存檔前調（存檔目錄）：往存檔裡補宿主要的文件 | called before mounting the save (save dir): adds the files the host needs to the save
 HLE_FORCE("_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", "fsp-srv；存檔 → 宿主目錄（單用戶）", Result, h_fs_MountSave, const char *name, const void *uid) {
     (void)uid;

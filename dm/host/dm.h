@@ -58,6 +58,9 @@ extern pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui, g_keyresf, g_keyba
 
 void load_modules(const char *dir, const char **names, int n);
 int dm_option_known(const char *name);   // 這個遊戲有沒有這個可選剪口（Mac：options.tsv；iOS：內嵌的剪口表）。模塊裝好後才準 | whether this game has the optional cut (Mac: options.tsv; iOS: the embedded cut table). Valid once the modules are loaded
+// 存檔已提交版的整樹快照（hle_fs.c）：持著提交鎖 clonefile 到 dst（dst 不能已存在）。0 = 成功，-1 = 還沒有事務式存檔掛載（調用方自己拷），其他 = errno
+// A whole-tree snapshot of the committed save (hle_fs.c): clonefile to dst while holding the commit lock (dst must not exist). 0 = done, -1 = no transactional save mounted yet (the caller copies it itself), anything else = errno
+int dm_save_snapshot(const char *dst);
 void run_module_inits(void);
 void *module_sym(module_t *m, const char *name);
 void *guest_sym(const char *name);
