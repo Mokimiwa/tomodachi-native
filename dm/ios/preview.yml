@@ -27,8 +27,9 @@ targets:
         CFBundleDisplayName: ${DM_DISPLAY_NAME}
         CFBundleVersion: "1"
         CFBundleShortVersionString: "1.0"
-        UILaunchScreen:                  # iOS 27 起必須有啓動畫面，只能是靜態的：純黃 | from iOS 27 a launch screen is required and can only be static: plain yellow
+        UILaunchScreen:                  # iOS 27 起必須有啓動畫面，只能是靜態的：黃底加遊戲 Logo | from iOS 27 a launch screen is required and can only be static: yellow with the game logo
           UIColorName: LaunchYellow
+          UIImageName: LaunchLogo          # 遊戲的標題 Logo（建置時從遊戲檔案取，tools/duo_assets.py --launch），外殼的開場畫面接手時同一張、同一個位置 | the game's title logo (taken from the game files at build time, tools/duo_assets.py --launch); the shell's opening screen takes over with the same picture in the same place
         CFBundleLocalizations: [en, zh-Hant, zh-Hans, ja, ko, de, es, fr, it, nl]   # 系統給的字（貼上鍵、鍵盤）跟著系統語言；同遊戲的語言 | system-provided text (the Paste key, the keyboard) follows the system language; the game's languages
         UISupportedInterfaceOrientations:   # 外螢幕也能橫拿 | the outer display can be held sideways too
           - UIInterfaceOrientationPortrait

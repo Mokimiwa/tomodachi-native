@@ -2,14 +2,18 @@
 #   logo_<語言>.png  標題 Logo（Layout/Menu_PhotoStudioTitleLogo_00 的 Title_LogoPhoto_<語言>，ASTC 4x4，sips 解碼）；取不到時用遊戲圖標當 logo.png
 #   wave.png         島名頁底部波浪的形狀（Layout/Common_MenuBGPa_00 的 LoopWave_00，BC4 灰度，可左右接續；存成白 = 波浪）
 #   doodle.png       波浪裡的塗鴉圖案（同一個包的 CmnFacePartsBG_00，BC4 灰度，可平鋪）
+#   --launch <資源目錄>  另在資源目錄裡寫 LaunchLogo.imageset（WW 版 Logo；iPhone 280 點、iPad 400 點寬），給 Info.plist 的 UILaunchScreen 用，
+#                       系統啓動畫面就有 Logo，不會先黃一片；外殼的開場畫面接手時用同一張、同一個位置
 # 只用標準庫 + zstd 命令 + sips（macOS 自帶）。
-# 用法：duo_assets.py <RomFS 目錄> <輸出目錄> [後備圖標.jpg]
+# 用法：duo_assets.py <RomFS 目錄> <輸出目錄> [後備圖標.jpg] [--launch <資源目錄>]
 # Take the pictures the Duo shell uses from the player's own game files (run at build time; the outputs live only in the Gen directory, never in the repository):
 #   logo_<lang>.png  the title logo (Title_LogoPhoto_<lang> in Layout/Menu_PhotoStudioTitleLogo_00, ASTC 4x4, decoded by sips); when it cannot be read, the game icon becomes logo.png
 #   wave.png         the shape of the wave at the bottom of the island-name page (LoopWave_00 in Layout/Common_MenuBGPa_00, BC4 grey, tiles left to right; saved as white = wave)
 #   doodle.png       the doodle pattern inside the wave (CmnFacePartsBG_00 in the same archive, BC4 grey, tiles)
+#   --launch <catalog>  also write LaunchLogo.imageset into the asset catalog (the WW logo; 280 points wide on iPhone, 400 on iPad) for UILaunchScreen in Info.plist,
+#                       so the system launch screen already shows the logo instead of plain yellow; the shell's opening screen takes over with the same picture in the same place
 # Uses only the standard library + the zstd command + sips (part of macOS).
-# Usage: duo_assets.py <RomFS dir> <output dir> [fallback icon.jpg]
+# Usage: duo_assets.py <RomFS dir> <output dir> [fallback icon.jpg] [--launch <asset catalog>]
 import os, struct, subprocess, sys, tempfile, zlib
 
 def sarc_files(d):   # SARC：名字 → 內容 | SARC: name → contents
@@ -77,9 +81,23 @@ def archive(romfs, name):
     d = subprocess.run(['zstd', '-dc', p], check=True, capture_output=True).stdout
     return bntx_textures(sarc_files(d)['timg/__Combined.bntx'])
 
+def launch_logo(out, catalog):   # 啓動畫面的 Logo（各尺寸由 sips 縮放）| the launch screen's logo (each size scaled by sips)
+    src = next((os.path.join(out, n) for n in ('logo_WW.png', 'logo.png') if os.path.isfile(os.path.join(out, n))), None)
+    if not src: return False
+    w0, h0 = (int(v) for v in subprocess.run(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', src], check=True, capture_output=True, text=True).stdout.split()[-3::2])
+    d = os.path.join(catalog, 'LaunchLogo.imageset'); os.makedirs(d, exist_ok=True); images = []
+    for idiom, pts, scale in (('iphone', 280, 2), ('iphone', 280, 3), ('ipad', 400, 1), ('ipad', 400, 2), ('universal', 280, 2), ('universal', 280, 3)):
+        w = pts * scale; h = round(w * h0 / w0); f = f'{idiom}_{scale}x.png'
+        subprocess.run(['sips', '-z', str(h), str(w), src, '--out', os.path.join(d, f)], check=True, capture_output=True)
+        images.append(f'{{"filename":"{f}","idiom":"{idiom}","scale":"{scale}x"}}')
+    open(os.path.join(d, 'Contents.json'), 'w').write('{"images":[' + ','.join(images) + '],"info":{"author":"xcode","version":1}}\n')
+    return True
+
 def main():
-    if len(sys.argv) < 3: sys.exit('usage: duo_assets.py <RomFS dir> <output dir> [fallback icon.jpg]')
-    romfs, out = sys.argv[1], sys.argv[2]; icon = sys.argv[3] if len(sys.argv) > 3 else None
+    args = sys.argv[1:]; catalog = None
+    if '--launch' in args: i = args.index('--launch'); catalog = args[i + 1]; del args[i:i + 2]
+    if len(args) < 2: sys.exit('usage: duo_assets.py <RomFS dir> <output dir> [fallback icon.jpg] [--launch <asset catalog>]')
+    romfs, out = args[0], args[1]; icon = args[2] if len(args) > 2 else None
     os.makedirs(out, exist_ok=True); made = []
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -103,6 +121,7 @@ def main():
                 made.append(file[:-4])
         except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as e:
             print(f'duo_assets: no doodle wave from the game files ({e})', file=sys.stderr)
+        if catalog and launch_logo(out, catalog): made.append('LaunchLogo')
     print(' '.join(made) if made else 'nothing')
     return 0
 

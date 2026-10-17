@@ -2,12 +2,12 @@
 //   摺痕：iOS 27.1 的保留區（UIView reservedRegionsOfKind: division，含未啓用的）。攤平時系統報的摺痕可能是零高，所以記住見過的最大高度，攤平和半折用同一套版面。
 //     沒有摺痕的螢幕（外螢幕、其他 iPhone）上半按 Duo 形狀（1920×1350）取高，同樣版面等比縮小。橫拿時畫面滿版、按鍵浮在上面（DuoPad.m 的 overlay 排法）。
 //   下半疊放順序：黃底 → 底部塗鴉波浪 → 倒影 → 按鍵。倒影是上半畫面底邊的上下翻轉、模糊，起始約 30% 不透明，在下半高度的三分之一內淡出。
-//   開場：系統啓動畫面是純黃（UILaunchScreen），接著這裡的黃底 + Logo（淡入），遊戲第一幀出來後整層淡出。全程只有淡入淡出，不做任何呼吸 / 脈動效果。
+//   開場：系統啓動畫面就是黃底加 Logo（UILaunchScreen 的 LaunchLogo），這裡用同一張、同一個位置接手（系統語言有自己的 Logo 時交叉淡入），遊戲第一幀出來後整層淡出。全程只有淡入淡出，不做任何呼吸 / 脈動效果。
 // The Duo shell's root view controller: places the top picture, the fold and the controller below, and runs the opening screen, the reflection, the typing card and the click on closing. Interface in duo_shell.h.
 //   The fold: the iOS 27.1 reserved region (UIView reservedRegionsOfKind: division, inactive ones included). When flat the system may report the fold with zero height, so the tallest height seen is kept and flat and half-folded share one layout.
 //     On screens without a fold (the outer display, other iPhones) the top takes the Duo shape's height (1920×1350) and the same layout scales down. Sideways, the picture fills the screen and the keys float over it (DuoPad.m's overlay arrangement).
 //   Lower-half stacking order: yellow → doodle wave at the bottom → reflection → keys. The reflection is the top picture's bottom edge flipped and blurred, starting at about 30% opacity and fading out within a third of the lower half's height.
-//   Opening: the system launch screen is plain yellow (UILaunchScreen), then this yellow + logo (fading in), and the whole layer fades out once the game's first frame is up. Fades only: no breathing or pulsing effect anywhere.
+//   Opening: the system launch screen already shows yellow with the logo (LaunchLogo in UILaunchScreen); this layer takes over with the same picture in the same place (cross-fading to the system language's own logo when there is one), and fades out once the game's first frame is up. Fades only: no breathing or pulsing effect anywhere.
 #import <UIKit/UIKit.h>
 #import <CoreImage/CoreImage.h>
 #import <AudioToolbox/AudioToolbox.h>
@@ -84,7 +84,7 @@ static double g_picture_aspect = 1920.0 / 1350.0;   // 主線程寫、各線程�
 @implementation DuoShellVC {
     UIView *_picture, *_pictureHost, *_panel, *_pad, *_splash; DuoPictureTouch *_touch;
     UIImageView *_band, *_splashBand, *_reflection, *_logo; CAGradientLayer *_reflMask;
-    UIImage *_still; CGSize _bandSize, _reflSize; CGRect _top, _fold;
+    UIImage *_still; CGSize _bandSize, _reflSize, _launchSize; CGRect _top, _fold;   // _launchSize：啓動畫面 Logo 的點大小（沒有 = 0） | the launch screen logo's size in points (none = 0)
     CGFloat _foldH, _foldW; NSString *_foldLog;          // 見過的最大摺痕高 / 寬、上次記日誌的摺痕 | tallest / widest fold seen, the fold last logged
     BOOL _overlay, _foldActive;                          // 橫拿：按鍵浮在畫面上；摺痕啓用中（半折） | sideways: keys float over the picture; the fold is active (half-folded)
     DuoTypeCard *_card; CGFloat _kbTop;                  // 打字卡、鍵盤頂（視圖坐標，沒有鍵盤 = 視圖高） | typing card, keyboard top (view coordinates; no keyboard = view height)
@@ -112,7 +112,10 @@ static double g_picture_aspect = 1920.0 / 1350.0;   // 主線程寫、各線程�
     _pad = duo_pad_new(); [_panel addSubview:_pad];
     _splash = [UIView new]; _splash.backgroundColor = yellow; [self.view addSubview:_splash];
     _splashBand = [UIImageView new]; [_splash addSubview:_splashBand];
-    _logo = [[UIImageView alloc] initWithImage:[self logoImage]]; _logo.contentMode = UIViewContentModeScaleAspectFit; _logo.alpha = 0; [_splash addSubview:_logo];
+    // 系統啓動畫面已經是黃底加 LaunchLogo（WW 版，Info.plist UILaunchScreen）：開場畫面先用同一張、同一個大小位置接手，看不出換畫面；沒有這張時照舊淡入
+    // The system launch screen already shows yellow with LaunchLogo (the WW logo, UILaunchScreen in Info.plist): the opening screen takes over with the same picture at the same size and place, so the handover is invisible; without it, the logo fades in as before
+    UIImage *launch = [UIImage imageNamed:@"LaunchLogo"]; _launchSize = launch ? launch.size : CGSizeZero;
+    _logo = [[UIImageView alloc] initWithImage:launch ?: [self logoImage]]; _logo.contentMode = UIViewContentModeScaleAspectFit; _logo.alpha = launch ? 1 : 0; [_splash addSubview:_logo];
     _ci = [CIContext contextWithOptions:nil]; _kbTop = CGFLOAT_MAX;
     if ([_picture isKindOfClass:UIImageView.class]) [self setStill:((UIImageView *)_picture).image];
     [self loadClick];
@@ -128,8 +131,22 @@ static double g_picture_aspect = 1920.0 / 1350.0;   // 主線程寫、各線程�
 }
 - (void)viewDidAppear:(BOOL)a {
     [super viewDidAppear:a];
-    [UIView animateWithDuration:0.35 delay:0.05 options:UIViewAnimationOptionCurveEaseOut animations:^{ self->_logo.alpha = 1; } completion:nil];
+    if (_launchSize.width <= 0) [UIView animateWithDuration:0.35 delay:0.05 options:UIViewAnimationOptionCurveEaseOut animations:^{ self->_logo.alpha = 1; } completion:nil];
+    else if (![self.logoName isEqualToString:@"WW"]) {   // 系統語言有自己的 Logo：從啓動畫面那張（WW）交叉淡入 | the system language has its own logo: cross-fade from the launch screen's (WW)
+        UIImage *mine = [self logoImage]; UIImageView *lv = _logo;
+        [UIView transitionWithView:lv duration:0.3 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{ lv.image = mine; } completion:nil];
+    }
     if (!_readyCalled) { _readyCalled = YES; duo_shell_ready(); }   // 第一次版面排好、畫面區形狀已知：遊戲 App 在這裡定出圖形狀並起宿主 | the first layout is done and the picture area's shape is known: the game app settles the output shape and starts the host here
+}
+- (void)viewWillAppear:(BOOL)a { [super viewWillAppear:a]; self.view.window.backgroundColor = duo_rgb(DUO_YELLOW); }   // 換螢幕時露出的空檔是黃的，不是黑的 | any gap while switching displays shows yellow, not black
+// 換螢幕（Duo 闔上 / 打開）或轉向時不播系統的旋轉動畫：闔到外螢幕橫拿時，系統會先按上一塊螢幕的方向畫、再轉 180° 到位，看起來是倒的。直接換成新方向的版面
+// No system rotation animation when the display changes (the Duo closing / opening) or the device turns: closing to the outer display held sideways, the system first draws in the previous display's orientation and then turns 180° into place, which looks upside down. The new layout appears directly instead
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)c {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:c];
+    UIWindowScene *ws = self.view.window.windowScene;
+    fprintf(stderr, "duo: 版面換成 %.0f×%.0f（介面方向 %ld）\n", size.width, size.height, ws ? (long)ws.effectiveGeometry.interfaceOrientation : -1L);
+    [UIView setAnimationsEnabled:NO];
+    [c animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> x) { (void)x; [UIView setAnimationsEnabled:YES]; }];
 }
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
@@ -137,15 +154,16 @@ static double g_picture_aspect = 1920.0 / 1350.0;   // 主線程寫、各線程�
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskAllButUpsideDown; }   // 外螢幕直拿、橫拿都行（橫拿同內螢幕：畫面滿版、按鍵浮在上面）；內螢幕本來就不理會這個 | the outer display works upright and sideways (sideways as on the inner display: full-screen picture, floating keys); the inner display ignores this anyway
 
 // Logo：按系統語言挑遊戲裡對應的那張，沒有就用 logo.png（遊戲圖標） | Logo: the game's version for the system language, else logo.png (the game icon)
-- (UIImage *)logoImage {
+- (NSString *)logoName {
     NSString *l = NSLocale.preferredLanguages.firstObject ?: @"en", *pick = @"WW";
     if ([l hasPrefix:@"zh"]) pick = ([l containsString:@"Hant"] || [l hasSuffix:@"TW"] || [l hasSuffix:@"HK"] || [l hasSuffix:@"MO"]) ? @"TWzh" : @"CHzh";
     else if ([l hasPrefix:@"ja"]) pick = @"JPja";
     else if ([l hasPrefix:@"ko"]) pick = @"KRko";
     else for (NSString *eu in @[@"de", @"es", @"fr", @"it", @"nl"]) if ([l hasPrefix:eu]) pick = [@"EU" stringByAppendingString:eu];
     NSString *forced = [NSUserDefaults.standardUserDefaults stringForKey:@"DuoLogo"];   // 啓動參數 -DuoLogo TWzh 可指定 | the launch argument -DuoLogo TWzh picks one
-    return duo_asset([@"logo_" stringByAppendingString:forced ?: pick]) ?: duo_asset(@"logo_WW") ?: duo_asset(@"logo");
+    return forced ?: pick;
 }
+- (UIImage *)logoImage { return duo_asset([@"logo_" stringByAppendingString:self.logoName]) ?: duo_asset(@"logo_WW") ?: duo_asset(@"logo"); }
 
 // ---- 版面 | Layout ----
 // 直拿（高 > 寬）：上半畫面、摺痕、下半手把。橫拿：畫面滿版，按鍵浮在上面（同一般 iPhone 橫拿），中間的鍵避開直的摺痕
@@ -157,7 +175,7 @@ static double g_picture_aspect = 1920.0 / 1350.0;   // 主線程寫、各線程�
         NSMutableString *m = [NSMutableString string];
         for (UIViewReservedRegion *r in rs) {
             [m appendFormat:@"%@%@ 邊距 %@；", NSStringFromCGRect(r.frame), r.active ? @" 啓用" : @"", NSStringFromUIEdgeInsets(r.margins)];
-            if ((r.frame.size.width >= b.size.width * 0.9 || r.frame.size.height >= b.size.height * 0.9) && CGRectIntersectsRect(CGRectInset(r.frame, -1, -1), b)) { fold = r.frame; _foldActive = r.active; }   // 只認貫穿整個畫面的 | only one that crosses the whole screen
+            if ((r.frame.size.width >= b.size.width * 0.9 || r.frame.size.height >= b.size.height * 0.9) && CGRectContainsRect(CGRectInset(b, -1, -1), r.frame)) { fold = r.frame; _foldActive = r.active; }   // 只認貫穿整個畫面、整條在畫面裡的（剛換到外螢幕的那一次版面，系統還報內螢幕的摺痕，位置在畫面外） | only one that crosses the whole screen and lies inside it (on the first layout after moving to the outer display the system still reports the inner display's fold, partly off screen)
         }
         if (rs.count) log = m;
         for (UIViewReservedRegion *r in [self.view reservedRegionsOfKind:UIViewReservedRegionKind.occlusionRegionKind])   // 相機等遮擋區，只記日誌 | occlusions such as cameras, logged only
@@ -197,6 +215,7 @@ static double g_picture_aspect = 1920.0 / 1350.0;   // 主線程寫、各線程�
     CGRect la = _foldActive && across ? _top : b;
     CGSize ls = _logo.image.size; CGFloat lw = fmin(b.size.width * 0.62, fmin(la.size.height, b.size.height * 0.5) * 0.80 * (ls.height > 0 ? ls.width / ls.height : 1.4));
     CGFloat lh = ls.width > 0 ? lw * ls.height / ls.width : lw;
+    if (_launchSize.width > 0) { lw = _launchSize.width; lh = _launchSize.height; }   // 同啓動畫面的大小（啓動畫面把圖放在整個螢幕正中） | the launch screen's size (it centres the picture on the whole screen)
     _logo.frame = CGRectMake(round(CGRectGetMidX(la) - lw / 2), round(CGRectGetMidY(la) - lh / 2), lw, lh);
     if (!_overlay) [self updateReflection];
     [self updateLiveReflection:panelY];

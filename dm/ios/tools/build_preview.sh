@@ -24,7 +24,8 @@ export DM_DISPLAY_NAME DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.$(echo "$GAME" 
 t "generate GenPreview/ (pictures from the game files, stills, asset catalog)"
 G=GenPreview; rm -rf $G && mkdir -p $G/duo || die "mkdir $G"
 ICON=$(dirname "$ROMFS")/icon.jpg
-DUO=$(python3 -I tools/duo_assets.py "$ROMFS" $G/duo "$ICON") || die "duo_assets.py"; t "game pictures: $DUO"
+A=$G/Assets.xcassets; mkdir -p $A
+DUO=$(python3 -I tools/duo_assets.py "$ROMFS" $G/duo "$ICON" --launch $A) || die "duo_assets.py"; t "game pictures: $DUO"
 cp "$STILLS"/picture*.png $G/duo/ || die "copy stills"
 for f in "$STILLS"/hinge_close.*; do [ -f "$f" ] && cp "$f" $G/duo/ && t "closing sound: $f"; done
 A=$G/Assets.xcassets; mkdir -p $A/LaunchYellow.colorset && printf '{"info":{"author":"xcode","version":1}}\n' > $A/Contents.json

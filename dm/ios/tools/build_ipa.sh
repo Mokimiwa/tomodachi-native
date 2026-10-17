@@ -75,7 +75,7 @@ else t "no app icon ($ICON not found): the home-screen icon stays blank"; fi
 # Duo shell pictures: the logo and the bottom wave from the game files (tools/duo_assets.py; the game icon when there is no logo), the closing sound copied from DUO_LOCAL (default $W/demo/preview); all only in Gen/duo, never in the repository.
 # The launch screen's yellow (#FFC100) goes into the asset catalog for UILaunchScreen in Info.plist
 mkdir -p Gen/duo Gen/Assets.xcassets/LaunchYellow.colorset || die "mkdir Gen/duo"
-DUO=$(python3 -I tools/duo_assets.py "$ROMFS" Gen/duo "$ICON") || die "duo_assets.py"; t "duo pictures: $DUO"
+DUO=$(python3 -I tools/duo_assets.py "$ROMFS" Gen/duo "$ICON" --launch Gen/Assets.xcassets) || die "duo_assets.py"; t "duo pictures: $DUO"
 for f in "${DUO_LOCAL:-$W/demo/preview}"/hinge_close.*; do [ -f "$f" ] && cp "$f" Gen/duo/ && t "closing sound: $f"; done
 printf '{"colors":[{"color":{"color-space":"srgb","components":{"red":"1.000","green":"0.757","blue":"0.000","alpha":"1.000"}},"idiom":"universal"}],"info":{"author":"xcode","version":1}}\n' > Gen/Assets.xcassets/LaunchYellow.colorset/Contents.json
 xcodegen generate -q > /dev/null || die "xcodegen"
