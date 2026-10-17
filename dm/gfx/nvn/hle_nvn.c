@@ -54,6 +54,8 @@ extern void *nvn_thunk[NVN_NFUNC];
 extern const char *nvn_names[NVN_NFUNC];
 extern void nvn_unimpl_entry(void);
 extern void nvn_prof_entry(void);
+extern void nvn_big_entry(void);
+void *nvn_big_real[NVN_NFUNC];            // 走宿主大棧的函數的真實現（nvn_entry.S nvn_big_entry） | the real implementation of functions that run on the big host stack (nvn_entry.S nvn_big_entry)
 void *nvn_real[NVN_NFUNC];               // DM_NVN_PROF：計時包裝調用的真實現 | DM_NVN_PROF: the real implementation called by the timing wrapper
 _Atomic uint64_t nvn_prof_ticks[NVN_NFUNC]; // DM_NVN_PROF：各函數累計耗時（cntvct 計數） | DM_NVN_PROF: cumulative time of each function (cntvct counts)
 static uint8_t g_unimpl_seen[NVN_NFUNC];
@@ -970,13 +972,20 @@ __attribute__((constructor)) static void nvn_nops_register(void) {
         nvn_slot[i].fn = (void *)nvn_nop;
     }
     unsigned nnop = sizeof g_nops / sizeof *g_nops;
+    // 錄製命令（nvnCommandBuffer*，每幀上萬次，宿主只追加記錄）以外的已實現函數走宿主大棧：提交 / 出圖 / 建對象會做 Metal 工作，遊戲線程的棧可能太小（見 nvn_entry.S nvn_big_entry，上游 d6cd8a8）
+    // Implemented functions other than command recording (nvnCommandBuffer*, tens of thousands per frame, where the host only appends records) run on the big host stack: submit / present / object creation do Metal work, and a game thread's stack may be too small (see nvn_entry.S nvn_big_entry, upstream d6cd8a8)
+    unsigned nbig = 0;
+    for (unsigned i = 0; i < NVN_NFUNC; i++)
+        if (nvn_slot[i].fn != (void *)nvn_unimpl_entry && nvn_slot[i].fn != (void *)nvn_nop && strncmp(nvn_names[i], "nvnCommandBuffer", 16)) {
+            nvn_big_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_big_entry; nbig++;
+        }
     // DM_NVN_PROF=1：已實現的函數（未實現樁與出圖除外：出圖含節拍等待，單獨計）套計時包裝，用於拆「翻譯層錄製期」耗時
     // DM_NVN_PROF=1: implemented functions (except unimplemented stubs and present: present includes the display-link wait and is counted separately) get a timing wrapper, used to break down the time spent in the "translation layer recording phase"
     if (getenv("DM_NVN_PROF"))
         for (unsigned i = 0; i < NVN_NFUNC; i++)
             if (nvn_slot[i].fn != (void *)nvn_unimpl_entry && strcmp(nvn_names[i], "nvnQueuePresentTexture")) { nvn_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_prof_entry; }
-    LOG("[nvn] 空設備：名字 %u，已實現 %u（語義 %u + 空實現 %u），其餘 %u 個接報紅樁",
-        NVN_NFUNC, g_nsem + nnop, g_nsem, nnop, NVN_NFUNC - g_nsem - nnop);
+    LOG("[nvn] 空設備：名字 %u，已實現 %u（語義 %u + 空實現 %u，其中 %u 個走宿主大棧），其餘 %u 個接報紅樁",
+        NVN_NFUNC, g_nsem + nnop, g_nsem, nnop, nbig, NVN_NFUNC - g_nsem - nnop);
 }
 
 // ---------- 窗口 / 出圖 ----------
