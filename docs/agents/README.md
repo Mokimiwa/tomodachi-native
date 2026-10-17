@@ -2,7 +2,7 @@
 
 These pages are for an agent asked to analyse a Switch NSP and port it with the native-execution approach of this repository and [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile): the game's own aarch64 code runs natively on Apple hardware, a rewriter patches only the instructions Apple's kernel cannot run, the host replaces Horizon system services, and NVN is reimplemented on Metal.
 
-Everything here was learned on two titles: Diablo II: Resurrected (SDK ~12, NVN 53, the original target of d2r-mobile) and Super Mario Bros. Wonder (SDK 16.2.0, NVN 55, the first target of nxnative, whose profile now lives upstream; its update 1.2.1 uses SDK 16.2.12). Where the two differed, both are given; a third title will differ again, so treat every number below as "measure it, don't assume it".
+Everything here was learned on Diablo II: Resurrected (SDK ~12, NVN 53, the original target of d2r-mobile) and Super Mario Bros. Wonder (SDK 16.2.0, NVN 55, the first target of nxnative, whose profile now lives upstream; its update 1.2.1 uses SDK 16.2.12), then extended upstream by Fire Emblem Engage (Unity, SDK 12.3.7), Metroid Dread (MercurySteam's engine, SDK 11.4.3), 13 Sentinels: Aegis Rim (Vanillaware's engine, SDK 11.4.3), Super Mario 3D World + Bowser's Fury (SDK 10.4.0, NVN 53) and The Legend of Zelda: Breath of the Wild (SDK 20.5.22, NVN 55), and here by Tomodachi Life: Living the Dream (SDK 20.5.3). Those profiles live upstream; their lessons stay in these pages ([upstream sync](../upstream-sync.md)). Where titles differed, each is given; the next title will differ again, so treat every number below as "measure it, don't assume it".
 
 | Page | Covers |
 |---|---|

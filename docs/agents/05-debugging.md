@@ -75,6 +75,12 @@ def __lldb_init_module(dbg, _):
 
 Patterns that worked: print every call of one function with its arguments; stop when a return value is null and print the backtrace; trace the branch path through one function (one-shot breakpoints on every branch site). Hardware watchpoints on words touched by `ldxr`/`stxr` may stay silent.
 
+## Scripted input and thread scheduling
+
+- `DM_KEYS="<seconds>:<button>[+button][~hold],…"` presses buttons from host start (`hle_hid.c`). `<seconds>:<button>*<count>/<interval>` repeats a press, e.g. `42:A*170/2` presses A every 2 s from 42 s on, 170 times; at most 1,024 steps after expansion. A long run through a game's story is then a single switch, such as Metroid Dread's title, new game and story recap. Sticks are `StickLLeft` / `StickLUp` / … with an optional amount (`StickRLeft=0.5`), and `Touch=x/y` taps the panel (upstream names the stick steps `LLeft` / `LUp` / `LRight` / `LDown`; Super Mario 3D World moves on its map by stick only); combos such as `L+R~0.5` press buttons together. An `f` before the time counts presented frames instead of seconds (`f2500:A`, repeat intervals in frames too): with another heavy job running, seconds drift away from the game's progress and a route stops lining up; frame numbers do not. Breath of the Wild from its title menu into the autosave: `DM_KEYS=f2500:A,f2800:A,f3100:A,f3400:A` (control at frame ~3900).
+- Frame numbers are a stable way to aim dumps (`DM_NVN_PASSDUMP=<frame>`, `DM_NVN_SHOT=…`) at the same scene in another run: the per-frame NVN call counts (`[nvn] 幀 N：… 次調用`) matched between runs of the same script. Times in seconds drift with load.
+- `DM_PREEMPT=0` / `1` turns the same-core preemption approximation off / on whatever the profile's `core_preempt` says (`hle_thread.c`). The thread dump at exit reports `同核搶佔讓步 N 次，共 T ms，到上限 K 次` (yields, total wait, 5 ms cap hits). A higher-priority thread that keeps a core busy shows up in the first eight `同核搶佔讓步到上限` lines, with its last SVC and call site.
+
 ## Memory growth
 
 1. The host's memory report line (`內存 至幀 …`) every few hundred frames; `footprint -p <pid>` from outside. On a phone, a crash with no log usually means `離系統內存上限還有` reached 0.

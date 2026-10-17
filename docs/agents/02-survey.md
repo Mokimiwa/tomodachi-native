@@ -60,6 +60,8 @@ The tables below are what to check by hand afterwards.
 | Fonts | Font archives and use of the system shared font | `Font/*.bfarc`; the shared font goes through `nn::fontll::ScalableFontEngineHelper::Decode` (BFTTF) |
 | Languages | Per-language archives | `Mals/<Region><lang>.sarc`, `Voice/Resource/<Region><lang>` |
 
+Archives the game reads itself need nothing from the host but plain file access. 13 Sentinels keeps everything in six CRI CPK files (`ROBO_*.CPK`, 4.3 GB) that CRI File System opens through `nn::fs`. To look inside one: the header and TOC are `@UTF` tables (big-endian columns), masked with CRI's byte stream (`m = 0x655f`, then `m *= 0x4115` per byte); file offsets in the TOC are relative to the smaller of `TocOffset` and `ContentOffset`, and files whose `ExtractSize` differs from `FileSize` are CRILAYLA-compressed. Its listing showed no shader container, which is how the shaders were found in `main` instead ([04](04-graphics.md)).
+
 ## Ghidra and REA
 
 - Convert with `nso2elf.py`, create one persistent headless project per module, and analyse once (Mario `main`, 28 MB: ~35 min, 138k functions). Ghidra's image base for these ELFs is 0x100000, so `FUN_xxxx` = module offset + 0x100000.

@@ -48,4 +48,5 @@ ht -t nca --exefsdir=$W/data/v0/ExeFS --romfsdir=$W/data/v0/RomFS $W/build/nsp/<
 ## Compressed RomFS content
 
 - Newer EPD titles store most files as `*.zs` (plain zstd, no dictionary in Mario; Zelda TotK needs `ZsDic.pack` dictionaries). Check for `*dic*` files before assuming plain zstd.
+- Older EPD titles (Super Mario 3D World + Bowser's Fury, a Wii U port) store almost everything as `*.szs`: Yaz0-compressed SARC. `shader_split.py` decompresses Yaz0 itself (`yaz0`, pure Python, about 20–45 MB/s per core; the whole 4.7 GB decompressed RomFS scans in about a minute). One of its SARCs (`SystemData/LayoutShader.szs`) is big-endian (BOM `FE FF`), which the SARC reader does not handle; it holds no shader container the game uses.
 - `*.sarc` / `*.pack` / `*.blarc` / `*.bfarc` are SARC archives; `*.byml` / `*.bgyml` are BYML (version 7 in Mario). A minimal reader for both is short enough to write inline when needed (see `shader_split.py` for SARC). Unity titles: `dm/gfx/tools/unityfs.py` reads UnityFS bundles, serialized files and objects by type tree (`bundle_files`, `serialized_objects`).
