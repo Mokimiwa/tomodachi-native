@@ -17,7 +17,7 @@
 # Every intermediate file is under <id>_build/ in the NSP folder: extract/ (the extracted game files, deleted after the IPA is built by default), aoc/ (each DLC's RomFS by index), tools/, patched_*/, shader/ (shader package and caches, kept so the next build is fast), logs/ (each step's full output), tmp/, ipa/. The finished IPA also goes to the NSP folder by default.
 # The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it).
 # The Python running this file needs lz4, capstone and fonttools; also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. The first run takes tens of minutes (mostly the shader libraries); later runs are much faster (the shader libraries come from the cache). Key values are never printed.
-import collections, ctypes, getpass, os, re, shutil, struct, subprocess, sys, threading, time, zlib
+import collections, ctypes, getpass, os, re, shutil, struct, subprocess, sys, tempfile, threading, time, zlib
 from pathlib import Path
 
 # ---- 設置 | Settings ----
@@ -91,6 +91,19 @@ def rmtree(p):
     elif p.exists(): shutil.rmtree(p)
 
 
+def build_nx_extract(repo, work, logs, env):
+    """編譯 nx_extract 到 <work>/tools/nx_extract/。先編到臨時目錄再拷過去：輸出路徑帶撇號（如「Bowser's Fury」）時 MSBuild 的條件式被截斷，
+    LibHac.dll 與可執行文件都不拷出來，編譯卻報成功
+    Build nx_extract into <work>/tools/nx_extract/. It is built in a temporary folder and copied over: with an apostrophe in the output path (e.g. "Bowser's Fury") MSBuild's conditions break,
+    LibHac.dll and the executable are not copied, and the build still reports success"""
+    nx = work / 'tools/nx_extract/nx_extract'
+    with tempfile.TemporaryDirectory(prefix='nx_extract_') as t:
+        run(['dotnet', 'build', repo / 'dm/tools/nx_extract', '-c', 'Release', '-o', t, '-v', 'quiet', '-nologo'], logs / 'nx_extract_build.log', env=env)
+        if not (Path(t) / 'nx_extract').exists(): raise BuildError(f'nx_extract 編譯後沒有可執行文件（見 {logs / "nx_extract_build.log"}）| nx_extract built without an executable (see {logs / "nx_extract_build.log"})')
+        rmtree(nx.parent); shutil.copytree(t, nx.parent)
+    return nx
+
+
 def swap_in(tmp, dst):   # 新產物整個換上（失敗時舊的不受影響） | swap the new output in as a whole (the old one is untouched on failure)
     rmtree(dst); tmp.rename(dst)
 
@@ -128,6 +141,8 @@ def scan_nsps(nsp_dir):
     Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}"""
     fams, unknown = {}, []
     for p in sorted(nsp_dir.glob('*.nsp')):
+        if p.stat().st_size == 0:   # 下載不全留下的空文件（塞爾達傳說 曠野之息的文件夾裡有一個 0 字節的 DLC NSP，旁邊是完整的 (1).nsp）| an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
+            say(f'跳過空文件 | skipping an empty file: {p.name}'); continue
         tid = title_of(p)
         if tid is None: unknown.append(p); continue
         low = tid & 0xFFF   # 基礎版 …000，更新 …800，DLC = 基礎版 + 0x1000 + 序號 | base …000, update …800, DLC = base + 0x1000 + index
@@ -190,8 +205,7 @@ def nso_image(path):   # 解出 NSO 的三段 | decompress an NSO's three segmen
 def survey(nsp_dir, app, fam, keys, repo, py, env):
     work = nsp_dir / f'{app:016X}_survey'; logs, ex = work / 'logs', work / 'extract'
     say(f'沒有 {app:016X} 的遊戲檔案：只做粗查，不出 IPA | no game profile for {app:016X}: survey only, no IPA')
-    nx = work / 'tools/nx_extract/nx_extract'
-    run(['dotnet', 'build', repo / 'dm/tools/nx_extract', '-c', 'Release', '-o', nx.parent, '-v', 'quiet', '-nologo'], logs / 'nx_extract_build.log', env=env)
+    nx = build_nx_extract(repo, work, logs, env)
     ups = sorted(fam['updates'], key=lambda u: u[0] or 0)
     upd = ups[-1][1] if ups else None
     tmp = work / 'extract.partial'; rmtree(tmp)
@@ -206,7 +220,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
 
     # 代碼模塊 | Code modules
     R += ['', '## 代碼模塊 | Code modules', '', '| 模塊 module | 構建號 build ID | text / ro / data (MB) |', '|---|---|---|']
-    found, sdkver, comps, unity, mods = {}, set(), set(), set(), []
+    found, sdkver, comps, unity, mods, glslc = {}, set(), set(), set(), [], 0
     for p in sorted((ex / 'ExeFS').iterdir()):
         if p.read_bytes()[:4] != b'NSO0': continue
         img, bid, szs = nso_image(p); mods.append(p)
@@ -214,6 +228,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
         sdkver |= {m.decode() for m in re.findall(rb'(?i)NintendoSDK_nnSdk-([0-9_]+)', img)}   # SDK 12 寫作 NintendoSdk_，16 寫作 NintendoSDK_ | SDK 12 spells it NintendoSdk_, SDK 16 NintendoSDK_
         comps |= {m.decode() for m in re.findall(rb'SDK MW\+Nintendo\+([\w]+-[0-9_]+)', img)}
         unity |= {m.decode() for m in re.findall(rb'20[12][0-9]\.[0-9]+\.[0-9]+f[0-9]', img)} if p.name == 'main' else set()
+        if p.name == 'main': glslc = img.count(b'\x91\x68\x86\x19')   # GLSLC 編譯輸出的魔數（shader_split.py glslc_shaders） | magic of GLSLC compiler outputs (shader_split.py glslc_shaders)
         for pat, name in MARKERS:
             if pat in img: found.setdefault(name, []).append(p.name)
     npdm = ex / 'ExeFS/main.npdm'
@@ -258,9 +273,10 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     # 對移植意味著什麼 | What it means for a port
     notes = []
     if 'NVN' not in found: notes.append('沒找到 NVN：宿主只實現了 NVN | no NVN found: the host implements only NVN')
-    if extra: notes.append(f'除 main / sdk 外還有 {", ".join(extra)}：裝載器能裝最多 8 個模塊，但打包與改寫目前只處理 main + sdk | modules besides main / sdk: {", ".join(extra)}; the loader takes up to 8 modules, but packaging and rewriting handle only main + sdk today')
+    if extra: notes.append(f'除 main / sdk 外還有 {", ".join(extra)}：寫進檔案的 modules（裝載順序 main、subsdk*、sdk），改寫、打包與裝載都按它走（銀河戰士 生存恐懼、十三機兵防衛圈的 subsdk0 是 NintendoSDK_movie） | modules besides main / sdk: {", ".join(extra)}; list them in the profile\'s modules (load order main, subsdk*, sdk), which rewriting, packaging and loading all follow (subsdk0 of Metroid Dread and 13 Sentinels is NintendoSDK_movie)')
     if mags['UnityFS'] or 'Unity IL2CPP' in found: notes.append('Unity：著色器是 UnityFS 包與 data.unity3d 裡的 Shader 對象，shader_split.py 經 unityfs.py 讀出（按 Unity 2020.3 的 Switch 格式寫成，別的 Unity 版本先核對） | Unity: the shaders are Shader objects in UnityFS bundles and data.unity3d, which shader_split.py reads through unityfs.py (written for Unity 2020.3\'s Switch format; check other Unity versions first)')
-    if not (mags['BNSH'] or mags['BAHS']) and not mags['UnityFS']: notes.append('頂層沒有 BNSH / BAHS：著色器在壓縮包或別的容器裡，要先找到 | no BNSH / BAHS at the top level: the shaders are inside compressed or other containers and must be located first')
+    if glslc: notes.append(f'main 裡有 {glslc} 處 GLSLC 編譯輸出的魔數（0x19866891）：著色器可能編進了 main（十三機兵防衛圈），檔案開 shader_main_glslc 由 shader_split.py 讀出 | main has {glslc} GLSLC compiler output magics (0x19866891): the shaders may be compiled into main (13 Sentinels); the profile key shader_main_glslc makes shader_split.py read them')
+    if not (mags['BNSH'] or mags['BAHS']) and not mags['UnityFS']: notes.append('頂層沒有 BNSH / BAHS：著色器在壓縮包、別的容器或 main 裡，要先找到 | no BNSH / BAHS at the top level: the shaders are inside compressed or other containers or in main, and must be located first')
     major = {v.split('_')[0] for v in sdkver}
     if not major: notes.append('沒找到 SDK 版本串 | no SDK version string found')
     elif major != {'16'}: notes.append(f'SDK {"/".join(sorted(major))}，不是馬力歐的 16：NVN 對象尺寸、API 版本與服務佈局按 SDK 不同（宿主已從 D2R 的 SDK 12 改成 16 的尺寸），按 docs/agents/03 逐項核對 | SDK {"/".join(sorted(major))}, not Mario\'s 16: NVN object sizes, API version and service layouts differ by SDK (the host was converted from D2R\'s SDK 12 to SDK 16 sizes); check them one by one per docs/agents/03')
@@ -308,7 +324,11 @@ def extract_aoc(nx, keys, work, app, fam, logs):
     Returns None without DLC. DLC packages are small (121 KB each for Engage, the content itself is in the update), so they are extracted again every time"""
     if not fam['dlc']: return None
     tmp = work / 'aoc.partial'; rmtree(tmp)
-    for tid, _, p in sorted(fam['dlc']):
+    best = {}   # 同一 DLC 有幾份時取版本最高、同版本取最大的那份 | when one DLC comes in several copies, take the highest version, and the largest of equal versions
+    for tid, ver, p in fam['dlc']:
+        k = (ver or 0, p.stat().st_size)
+        if tid not in best or k > best[tid][0]: best[tid] = (k, p)
+    for tid, (_, p) in sorted(best.items()):
         idx = tid - app - 0x1000
         say(f'DLC 序號 {idx} | DLC index {idx}: {p.name}')
         run([nx, keys, '--aoc', p, tmp / str(idx)], logs / f'aoc_{idx}.log')
@@ -423,9 +443,8 @@ def main(args=None):
     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6   # 解包 + 著色器緩存 + 餘量 | extraction + shader cache + slack
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'{work} 所在的卷剩餘不足 {gb:.0f} GB | less than {gb:.0f} GB free on the volume of {work}')
-    nx = work / 'tools/nx_extract/nx_extract'
     say('編譯 nx_extract | building nx_extract')
-    run(['dotnet', 'build', repo / 'dm/tools/nx_extract', '-c', 'Release', '-o', nx.parent, '-v', 'quiet', '-nologo'], logs / 'nx_extract_build.log', env=env)
+    nx = build_nx_extract(repo, work, logs, env)
     dirs, clone = {}, None
     for ver in versions:   # 基礎版先單獨解，後面的更新拿它的 RomFS 做克隆比對 | the base game is extracted alone first; later updates clone against its RomFS
         b, u = picks[ver]

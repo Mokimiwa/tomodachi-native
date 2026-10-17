@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 # 馬力歐全部著色器 → dmsh_build.py 認的「包目錄」+ 著色器映射表 + 翻譯查詢作答表（計算著色器的線程組 / 共享內存）。
-# 來源（全量掃，不靠文件名）：RomFS 下每個文件（.zs 先 zstd 解壓，SARC 逐成員展開）與 ExeFS main（NSO，lz4 解壓）裡的
+# 來源（全量掃，不靠文件名）：RomFS 下每個文件（.zs 先 zstd 解壓，Yaz0 先解壓，SARC 逐成員展開）與 ExeFS main（NSO，lz4 解壓）裡的
 #   · BNSH（'BNSH\0\0\0\0'，bfsha / 粒子特效 esetb / UI 佈局 blarc / main 內嵌各自帶）：
 #       +0x60 grsc 塊；+0x7c 變體數 u32；+0x80 變體表指針（指針都相對 BNSH 起點）。變體 0x40 字節，取 +0x10 二進制程序；
 #       二進制程序 +0x08 起 6 個階段指針：頂點、外殼、域、幾何、像素、計算；階段代碼描述 +0x08 控制段指針、+0x10 代碼區指針、+0x18 代碼區長、+0x1c 控制段長。
 #   · BAHS（agl 的 sharcb：agl / gsys 資源包、Secred 包裡的 GameAglShader）：文件頭 +0x1c 代碼區起點、+0x18 代碼區長；
-#       表區裡每條二進制項 16 字節 {代碼偏移（相對代碼區，0x100 對齊）, 0, 控制段長 0x880 / 0x88c, 控制段相對本項地址的有符號偏移}。
+#       表區裡每條二進制項 16 字節 {代碼偏移（相對代碼區，0x100 對齊）, 0, 控制段長 0x880 / 0x88c（3D 世界 0x848）, 控制段相對本項地址的有符號偏移}。
 #       控制段在多個程序間共用，所以按項配對，不能按控制段找代碼；項靠「控制段魔數 + 代碼區魔數 + 長度自洽」三重核對認出。
 #   · Unity（UnityFS 資源包、Data 下的序列化文件，讀法見 unityfs.py）：每個 Shader 對象的 Switch 平台子程序，程序代碼 = 0x60 頭 + 各階段塊。
 #       頭是 4 個 i32 ×6 數組，下標按 NVN 階段（0 頂點 1 像素 2 幾何 3 外殼 4 域 5 計算）：[0] 未用（0 或暫存大小）、[1] 塊偏移（相對 +0x60，−1 = 無此階段）、[2] 控制段長、[3] 代碼區長；
 #       塊 = 控制段 + 代碼區。一個程序的頂點 / 像素階段即一對。遊戲本體的序列化文件（data.unity3d、unity default resources）不帶類型樹，借資源包裡同哈希的 Shader 類型樹（第二遍）
+#   · MSHD（MercurySteam，銀河戰士 生存恐懼 system/shd/*.bshdat）：每個階段 = 控制段（+0x20 = 控制段長；後面有時跟一小段編譯選項表）+ 下一個代碼區頭起的代碼區；
+#       控制段 0x880 之後是 NV 匯編文本，代碼區之後是 SASS 反匯編文本。478 個文件全是「頂點、像素」成對排列（1、2 或 4 對），按順序兩兩配對
 # 代碼區：0x30 頭 + （圖形）0x50 SPH + 指令；頭魔數圖形 0x12345678、計算 0x12345679。控制段 0x98761234 開頭，+0x704 = 代碼區長，
 #   +0x700 = c1 常數段在代碼區內的起點；計算著色器 +0x748 線程組 xyz（u32 ×3）、+0x754 共享內存字節（D2R 22 個計算著色器與 PC 反射逐條核對）。
 # 階段：BNSH 取階段槽；BAHS 取 SPH 第 0 字 bits 10..13（1 頂點 2 外殼 3 域 4 幾何 5 像素），計算頭的為計算。
-# 鍵 = sha256(控制段前 0x880 字節 + 代碼區)[:16]，與宿主 prog_get 一致：本作控制段相同、代碼不同的情況很多
+# 鍵 = sha256(控制段前 0x880 字節（控制段 +0x20 自報更短時取其長度，見 ctl_len）+ 代碼區)[:16]，與宿主 prog_get 一致：本作控制段相同、代碼不同的情況很多
 #   （SecredUber 16600 個階段著色器只有 3079 種控制段，其中 6367 處同控制段而代碼不同），只哈希控制段會拿錯庫。
 # 輸出：<包目錄>/<階段>_<來源組>.bin，每條記錄 = 'BTCDBTCD' + 頭（+0x28 控制段長、+0x2c 代碼區長）補到 0x38 + 代碼區 + 控制段，同鍵只出一份；
 #   映射表行與 D2R 的 shader_map.tsv 同列（第 5 列記首次出現的位置）；作答表每個計算著色器一行 {"local", "shared"}（共享內存按 16 字節向上取整，同 D2R 口徑）。
@@ -22,20 +24,22 @@
 #   Unity 的類型樹字符串要 Unity 的公共字符串表，取自第一個 main
 # 配對表：BNSH 每個變體（Unity 每個程序）的（頂點鍵, 像素鍵），dmsh_build 據此給頂點著色器補上像素著色器讀而它沒寫的輸出（見 dmsh_build.py vs_pad）
 # All of Mario's shaders → the "package directory" dmsh_build.py understands + the shader map + the translation query answer table (thread group / shared memory of compute shaders).
-# Sources (a full scan, not relying on file names): every file under RomFS (.zs is zstd-decompressed first, SARC is expanded member by member) and ExeFS main (NSO, lz4-decompressed), looking for
+# Sources (a full scan, not relying on file names): every file under RomFS (.zs is zstd-decompressed first, Yaz0 is decompressed, SARC is expanded member by member) and ExeFS main (NSO, lz4-decompressed), looking for
 #   · BNSH ('BNSH\0\0\0\0', carried by bfsha / particle effect esetb / UI layout blarc / embedded in main):
 #       +0x60 grsc block; +0x7c variation count u32; +0x80 variation table pointer (pointers are relative to the BNSH start). A variation is 0x40 bytes; the binary program is at +0x10;
 #       the binary program has 6 stage pointers from +0x08: vertex, hull, domain, geometry, pixel, compute; the stage code descriptor has +0x08 control pointer, +0x10 code area pointer, +0x18 code area length, +0x1c control length.
 #   · BAHS (agl's sharcb: the agl / gsys resource packs, GameAglShader in the Secred pack): file header +0x1c code region start, +0x18 code region length;
-#       each binary entry in the table area is 16 bytes {code offset (relative to the code region, 0x100-aligned), 0, control length 0x880 / 0x88c, signed offset of the control relative to this entry's address}.
+#       each binary entry in the table area is 16 bytes {code offset (relative to the code region, 0x100-aligned), 0, control length 0x880 / 0x88c (3D World 0x848), signed offset of the control relative to this entry's address}.
 #       Control sections are shared between programs, so pairing goes by entry, never by finding code from a control; entries are recognized by a triple check of "control magic + code magic + consistent lengths".
 #   · Unity (UnityFS bundles and the serialized files under Data, read by unityfs.py): the Switch subprograms of each Shader object; the program code = a 0x60 header + one block per stage.
 #       The header is 4 i32 ×6 arrays indexed by NVN stage (0 vertex 1 pixel 2 geometry 3 hull 4 domain 5 compute): [0] unused (0 or a scratch size), [1] block offset (from +0x60, -1 = no such stage), [2] control length, [3] code length;
 #       block = control section + code area. A program's vertex / pixel stages form a pair. The game's own serialized files (data.unity3d, unity default resources) carry no type trees and borrow the bundles' Shader type tree of the same hash (second pass)
+#   · MSHD (MercurySteam, Metroid Dread system/shd/*.bshdat): each stage = a control section (+0x20 = control length; sometimes a small compiler option table follows) + the code area starting at the next code header;
+#       NV assembly text follows the first 0x880 bytes of the control section, and SASS disassembly text follows the code area. All 478 files hold "vertex, pixel" in pairs (1, 2 or 4 pairs), paired two by two in order
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
-# Key = sha256(first 0x880 bytes of the control section + code area)[:16], the same as the host's prog_get: in this game many shaders share a control section but differ in code
+# Key = sha256(first 0x880 bytes of the control section (its own length when control +0x20 says it is shorter, see ctl_len) + code area)[:16], the same as the host's prog_get: in this game many shaders share a control section but differ in code
 #   (SecredUber's 16600 stage shaders have only 3079 distinct control sections, with 6367 cases of same control, different code), so hashing the control alone picks the wrong library.
 # Output: <package dir>/<stage>_<source group>.bin, each record = 'BTCDBTCD' + header (+0x28 control length, +0x2c code length) padded to 0x38 + code area + control section, one copy per key;
 #   map rows have the same columns as D2R's shader_map.tsv (column 5 records where the key first appeared); the answer table has one row per compute shader {"local", "shared"} (shared memory rounded up to 16 bytes, as D2R did).
@@ -47,6 +51,8 @@ import collections, concurrent.futures as cf, hashlib, json, os, re, struct, sub
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 GAME = _game.load()   # 當前遊戲檔案（DM_GAME，必給）：來源組規則與表頭說明 | the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
+GLSLC = GAME.get('shader_main_glslc', 'off') == 'on'   # main 裡的 GLSLC 編譯輸出（glslc_shaders） | GLSLC compiler outputs in main (glslc_shaders)
+SEPARABLE = GAME.get('shader_separable', 'off') == 'on'   # 單階段程序、繪製時按階段拼（separable_pairs） | single-stage programs combined per stage at draw time (separable_pairs)
 
 CTL_MAGIC, GFX_MAGIC, CS_MAGIC = bytes.fromhex('34127698'), bytes.fromhex('78563412'), bytes.fromhex('79563412')
 STAGES = ['vs', 'hs', 'ds', 'gs', 'ps', 'cs']
@@ -55,10 +61,22 @@ ZH = {'vs': '頂點', 'hs': '外殼', 'ds': '域', 'gs': '幾何', 'ps': '像素
 
 def red(msg): sys.exit('【紅】' + msg)
 
+def ctl_len(ctl):
+    """控制段參與鍵的字節數：控制段 +0x20 是它自己的長度。馬力歐、火紋 Engage、生存恐懼、十三機兵的控制段都不短於 0x880，取前 0x880；
+    SDK 10 的超級馬力歐 3D 世界 + 狂怒世界有 2,888 個只有 0x850 字節（ShaderData 的 bfsha、6 個佈局），後面緊跟別的數據，只取它自己的長度（與宿主 keys_hash 一致）
+    Number of control bytes in the key: control +0x20 holds the section's own length. Every control section of Mario, Fire Emblem Engage, Metroid Dread and 13 Sentinels is at least 0x880 bytes, so the first 0x880 are used;
+    SDK 10's Super Mario 3D World + Bowser's Fury has 2,888 that are only 0x850 bytes (the bfsha in ShaderData, 6 layouts), with other data right after them, so only their own length is used (the same as the host's keys_hash)"""
+    n = struct.unpack_from('<I', ctl, 0x20)[0]
+    return n if 0x760 <= n < 0x880 else 0x880
+
+def skey(ctl, code):
+    return hashlib.sha256(ctl[:ctl_len(ctl)] + code).hexdigest()[:16]
+
 def check(where, st, ctl, code):
     """控制段與代碼區自洽；不自洽返回原因 | control section and code area consistent; returns the reason if not"""
-    if ctl[:4] != CTL_MAGIC or len(ctl) < 0x880: return '控制段異常'
-    if code[:4] != (CS_MAGIC if st == 'cs' else GFX_MAGIC): return '代碼區頭魔數與階段不符'
+    if ctl[:4] != CTL_MAGIC or len(ctl) < ctl_len(ctl): return '控制段異常'
+    # 計算代碼區可以沒有頭（SDK 10 的超級馬力歐 3D 世界 + 狂怒世界與 D2R：指令從 +0 起，dmsh_build 只在有 0x12345679 頭時去頭） | a compute code area may have no header (SDK 10's Super Mario 3D World + Bowser's Fury and D2R: instructions start at +0; dmsh_build strips only a 0x12345679 header)
+    if st == 'cs' and code[:4] in (CS_MAGIC, GFX_MAGIC) and code[:4] != CS_MAGIC or st != 'cs' and code[:4] != GFX_MAGIC: return '代碼區頭魔數與階段不符'
     if struct.unpack_from('<I', ctl, 0x704)[0] != len(code): return '控制段 +0x704 與代碼區長不符'
     return None
 
@@ -85,7 +103,7 @@ def bahs_shaders(d, label):
     out = []
     for a in range(0, region - 16, 4):
         off, z, csz, rel = struct.unpack_from('<IIIi', d, a)
-        if z or csz not in (0x880, 0x88c) or off % 0x100: continue
+        if z or not (csz in (0x880, 0x88c) or 0x760 <= csz < 0x880) or off % 0x100: continue   # 控制段長：馬力歐 0x880 / 0x88c，3D 世界的 BAHS 第 9 版 0x848 | control length: Mario 0x880 / 0x88c, 3D World's BAHS version 9 0x848
         c = a + rel
         if c < 0 or c + csz > region or d[c:c + 4] != CTL_MAGIC: continue
         n = struct.unpack_from('<I', d, c + 0x704)[0]
@@ -95,6 +113,64 @@ def bahs_shaders(d, label):
         if not st or check(label, st, ctl, code): continue
         out.append((f'{label}#BAHS@{a:#x}', st, ctl, code))
     return out
+
+def mshd_shaders(d, label):
+    out, c = [], d.find(CTL_MAGIC)
+    while c >= 0:
+        nctl = struct.unpack_from('<I', d, c + 0x20)[0]
+        g = d.find(GFX_MAGIC, c + nctl)
+        if nctl < 0x880 or g < 0 or g - c - nctl > 0x400: red(f'{label} MSHD 控制段 @{c:#x}：長 {nctl:#x}，之後找不到代碼區頭')
+        ncode = struct.unpack_from('<I', d, c + 0x704)[0]
+        ctl, code = d[c:c + nctl], d[g:g + ncode]
+        st = SPH_STAGE.get((struct.unpack_from('<I', code, 0x30)[0] >> 10) & 0xf)
+        if st != ('vs', 'ps')[len(out) % 2]: red(f'{label} MSHD @{c:#x}：第 {len(out)} 個階段是 {st}，不是頂點 / 像素交替')
+        why = check(label, st, ctl, code)
+        if why: red(f'{label} MSHD @{c:#x} {st}：{why}')
+        out.append((f'{label}#MSHD#var{len(out) // 2}', st, ctl, code))
+        c = d.find(CTL_MAGIC, g + ncode)
+    if len(out) % 2: red(f'{label} MSHD：{len(out)} 個階段，不成對')
+    return out
+
+def glslc_shaders(d, label):
+    """GLSLC 編譯輸出（十三機兵防衛圈 main 只讀段裡 838 個，各一個階段）：魔數 0x19866891 起，+0x44 = 整份長；份內恰有一個控制段，代碼區緊跟其後（控制段 +0x20 = 控制段長）。
+    魔數是 4 字節，別的遊戲的 main 裡也有（火焰紋章 Engage 有 11 份），所以只在檔案 shader_main_glslc 開時讀，且只收三重核對都過的
+    GLSLC compiler outputs (838 in 13 Sentinels' main read-only segment, one stage each): from the magic 0x19866891, +0x44 = the whole output's length; each output holds exactly one control section with the code area right after it (control +0x20 = control length).
+    The magic is only 4 bytes and other games' mains have it too (Fire Emblem Engage has 11), so this runs only when the profile's shader_main_glslc is on, and keeps only outputs that pass the triple check"""
+    out = []
+    for m in re.finditer(b'\x91\x68\x86\x19', d):
+        h = m.start(); size = struct.unpack_from('<I', d, h + 0x44)[0]
+        c = d.find(CTL_MAGIC, h, h + size) if 0x880 < size <= len(d) - h else -1
+        if c < 0 or d.find(CTL_MAGIC, c + 4, h + size) >= 0: continue
+        nctl, ncode = struct.unpack_from('<I', d, c + 0x20)[0], struct.unpack_from('<I', d, c + 0x704)[0]
+        if nctl < 0x880 or c + nctl + ncode > h + size: continue
+        ctl, code = d[c:c + nctl], d[c + nctl:c + nctl + ncode]
+        st = 'cs' if code[:4] == CS_MAGIC else SPH_STAGE.get((struct.unpack_from('<I', code, 0x30)[0] >> 10) & 0xf) if code[:4] == GFX_MAGIC else None
+        if not st or check(label, st, ctl, code): continue
+        out.append((f'{label}#GLSLC@{h:#x}', st, ctl, code))
+    if not out: red(f'{label}：檔案開了 shader_main_glslc，卻沒有一份 GLSLC 輸出')
+    return out
+
+def yaz0(s):
+    """Yaz0 解壓（超級馬力歐 3D 世界 + 狂怒世界：RomFS 幾乎全是 .szs = Yaz0 包著的 SARC）。純 Python 每核約 20–45 MB/s，全 RomFS 4.7 GB 併發下不到一分鐘，不另裝依賴。
+    組頭字節逐位：1 = 原樣 1 字節；0 = 回拷，2 字節 {長度高 4 位, 距離 12 位}（距離 +1），長度 0 時再讀 1 字節 + 0x12，否則 +2。重疊回拷按週期展開
+    Yaz0 decompression (Super Mario 3D World + Bowser's Fury: almost all of RomFS is .szs = SARC wrapped in Yaz0). Pure Python runs at about 20–45 MB/s per core, under a minute for the whole 4.7 GB RomFS in parallel, and needs no extra dependency.
+    Group header bits: 1 = one literal byte; 0 = back-reference, 2 bytes {length high nibble, 12-bit distance} (distance + 1); length 0 reads one more byte + 0x12, else + 2. Overlapping copies are expanded by their period"""
+    n = int.from_bytes(s[4:8], 'big'); out = bytearray(); si = 16
+    while len(out) < n:
+        h = s[si]; si += 1
+        for _ in range(8):
+            if h & 0x80:
+                out.append(s[si]); si += 1
+            else:
+                b1, b2 = s[si], s[si + 1]; si += 2
+                dist, ln = ((b1 & 15) << 8 | b2) + 1, b1 >> 4
+                if ln: ln += 2
+                else: ln = s[si] + 0x12; si += 1
+                st = len(out) - dist
+                out += out[st:st + ln] if dist >= ln else (out[st:] * (ln // dist + 1))[:ln]
+            if len(out) >= n: break
+            h <<= 1
+    return bytes(out[:n])
 
 def sarc_members(d):
     hl, bom, size, doff = struct.unpack_from('<HHII', d, 4)
@@ -140,10 +216,12 @@ def unity_shaders(d, label, out, trees):
                 out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(code, where))
 
 def scan_blob(d, label, out):
+    if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:4] == b'SARC':
         for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out)
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
+    if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
     for m in re.finditer(b'BNSH\0\0\0\0', d):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
         if m.start() + size <= len(d) and d[m.start() + 0x60:m.start() + 0x64] == b'grsc': out.extend(bnsh_shaders(d, m.start(), label))
@@ -155,27 +233,46 @@ def group(label):
         if k in label: return g
     return 'other'
 
+def ps_inputs(code):
+    """像素著色器讀的通用屬性：SPH 第 6–13 字是 32 個屬性各 8 位的輸入圖（Ryujinx ShaderHeader.ImapTypes），非 0 = 讀；翻譯出的 MSL 輸入就是 user(locn<屬性號>)
+    Generic attributes a pixel shader reads: SPH words 6–13 are the input map, 8 bits for each of the 32 attributes (Ryujinx ShaderHeader.ImapTypes), non-zero = read; the translated MSL inputs are exactly user(locn<attribute>)"""
+    return {i for i in range(32) if struct.unpack_from('<I', code, 0x30 + 4 * (6 + (i >> 2)))[0] >> ((i & 3) * 8) & 0xff}
+
+def separable_pairs(keys):
+    """單階段程序（十三機兵防衛圈：每份 GLSLC 輸出建一個只有一個階段的程序，繪製時 BindProgram 按階段位把頂點、像素程序拼起來），真配對只在繪製時才有。
+    vs_pad 只用配對像素著色器讀的位置的並集：所以每個頂點著色器配上一組「覆蓋」——讀到的位置合起來等於全部像素著色器讀的位置的最少幾個像素著色器（貪心，同樣多時取鍵小的），
+    補完的頂點著色器能接任何一個像素著色器。全配對要 376 × 375 行，覆蓋只要幾行 ×376
+    Single-stage programs (13 Sentinels: each GLSLC output becomes a program with one stage, and BindProgram's stage bits combine vertex and pixel programs per draw) have their real pairs only at draw time.
+    vs_pad uses only the union of the locations the paired pixel shaders read, so every vertex shader is paired with a "cover": the fewest pixel shaders whose read locations together equal those of all pixel shaders (greedy, ties go to the smaller key);
+    padded that way, a vertex shader links with any pixel shader. All pairs would be 376 × 375 rows; the cover needs a few rows × 376"""
+    ins = {k: ps_inputs(v[3]) for k, v in keys.items() if v[1] == 'ps'}
+    left, cover = set().union(*ins.values()) if ins else set(), []
+    while left:
+        k = min(ins, key=lambda k: (-len(ins[k] & left), k)); cover.append(k); left -= ins[k]
+    return {(v, p) for v in keys if keys[v][1] == 'vs' for p in cover}, cover
+
 def var_pairs(found):
     """BNSH 同一變體裡的（頂點鍵, 像素鍵） | (vertex key, pixel key) within the same BNSH variation"""
     var = collections.defaultdict(dict)
     for where, st, ctl, code in found:
-        if '#var' in where: var[where][st] = hashlib.sha256(ctl[:0x880] + code).hexdigest()[:16]
+        if '#var' in where: var[where][st] = skey(ctl, code)
     return {(v['vs'], v['ps']) for v in var.values() if 'vs' in v and 'ps' in v}
 
 def scan_file(args):
     """→ (相對路徑, {鍵: …}, 配對, 額外)；額外 = 本文件的 Unity 類型樹，或 'defer'（缺類型樹，第二遍再掃） | → (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, or 'defer' (no type tree, scanned again in the second pass)"""
     path, rel = args
     d = subprocess.run(['zstd', '-d', '-c', '-q', path], capture_output=True, check=True).stdout if path.endswith('.zs') else open(path, 'rb').read()
+    if d[:4] == b'Yaz0': d = yaz0(d)
     found = []; trees = {}
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d: return rel, {}, set(), {}
+    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d): return rel, {}, set(), {}   # SARC 裡可能還有 Yaz0 成員 | a SARC may hold Yaz0 members
     else: scan_blob(d, '/' + rel, found)
     uniq = {}
     for where, st, ctl, code in found:
-        key = hashlib.sha256(ctl[:0x880] + code).hexdigest()[:16]
+        key = skey(ctl, code)
         if key in uniq and (uniq[key][2] != ctl or uniq[key][3] != code): red(f'鍵 {key} 相同而控制段或代碼區不同（{where}）')
         uniq.setdefault(key, (where, st, ctl, code))
     return rel, uniq, var_pairs(found), trees
@@ -209,7 +306,8 @@ def main():
             try: common = unityfs.common_strings(img)
             except ValueError: common = None   # 不是 Unity 遊戲 | not a Unity game
         found = []; scan_blob(img, 'main' + ('@' + tag if tag else ''), found)
-        results.append(('main', {hashlib.sha256(c[:0x880] + k).hexdigest()[:16]: (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
+        if GLSLC: found += glslc_shaders(img, 'main' + ('@' + tag if tag else ''))
+        results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
     keys = {}
     # 第一遍：全部文件；Unity 資源包帶類型樹，順手收下 Shader 的樹。第二遍：沒帶類型樹的 Unity 序列化文件借這些樹再掃
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
@@ -233,6 +331,9 @@ def main():
                 if keys[key][2] != v[2] or keys[key][3] != v[3]: red(f'鍵 {key} 相同而控制段或代碼區不同（{v[0]} / {keys[key][0]}）')
                 continue
             keys[key] = v; per_src[group(v[0])] += 1
+    if SEPARABLE:
+        sp, cover = separable_pairs(keys); pairs |= sp
+        print(f'單階段程序：每個頂點著色器配 {len(cover)} 個像素著色器作覆蓋（{" ".join(cover)}） | single-stage programs: every vertex shader is paired with a cover of {len(cover)} pixel shader(s)')
     os.makedirs(pkg, exist_ok=True)
     for f in os.listdir(pkg):
         if f.endswith('.bin'): os.unlink(os.path.join(pkg, f))
@@ -251,7 +352,8 @@ def main():
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w') as f:
-        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] for r in rows))) if hit)
+        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] for r in rows)),
+                                            ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE}（RomFS + main 裡的 {kinds}）→ 控制段 + 代碼區鍵（dm/gfx/tools/shader_split.py）\n')
         f.write('# 第 5 列記每個鍵首次出現的位置；本作沒有 PC 版配對\n')
         f.write('package\tindex\tstage\tdm_ctl_sha16\tsource\n')

@@ -28,6 +28,15 @@ rel = {}
 for k in range(tags[8] // 24):                                   # DT_RELA = 7, DT_RELASZ = 8
     off, info, add = struct.unpack_from('<QQq', d, tags[7] + k * 24)
     if info & 0xffffffff == 1027: rel[off] = add                 # R_AARCH64_RELATIVE
+# DT_RELR（36 / 35，SDK 20 起）：加數在槽裡；偶數項 = 起點，奇數項 = 其後 63 槽的位圖 | DT_RELR (36 / 35, from SDK 20): the addend is in the slot; even entry = start, odd entry = bitmap of the next 63 slots
+where = None
+for k in range(tags.get(35, 0) // 8):
+    e = struct.unpack_from('<Q', d, tags[36] + k * 8)[0]
+    if not e & 1:
+        rel[e] = struct.unpack_from('<Q', d, e)[0]; where = e + 8; continue
+    for b in range(63):
+        if e >> (b + 1) & 1: rel[where + b * 8] = struct.unpack_from('<Q', d, where + b * 8)[0]
+    where += 63 * 8
 
 # 1) loader: name -> GOT entry -> slot
 i, reg, got_of_reg, cur, fetched, slots, order = LOADER // 4, {}, {}, None, None, {}, []
