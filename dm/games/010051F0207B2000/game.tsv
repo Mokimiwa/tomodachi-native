@@ -78,3 +78,8 @@ ui_shaders	main#BNSH@0x363f000 main#BNSH@0x3637000 /Layout/
 # Of those, the ones whose vertex-stage cb0 starts with the 4-row clip transform (row-major): the ui2d and font built-ins (all 11 vertex shaders checked: x reads only row 0, y only row 1). These draws keep the whole-picture viewport
 # and get row 0 (wide) or row 1 (tall) multiplied by the band's ratio instead: pixels inside the band stay the same, and parts reaching past the 16:9 canvas (such as the thought bubble over a Mii that walked to the side) still show in the strips. Layout archive shaders vary in layout and keep the shrunken viewport
 ui_open_shaders	main#BNSH@0x363f000 main#BNSH@0x3637000
+# 拷貼圖的著色器：agl 的貼圖拷貝，取樣坐標 = 繞中心旋轉後的 (±0.5 + cb0 第 6 行 z/w) × 第 7 行 x/y + 0.5。教學聚光（壓暗畫面、留一塊亮框）每幀把整個畫面拷進一張 1920x1080 貼圖，
+# 亮框再按 16:9 的螢幕坐標取它。畫面比 16:9 寬或高時，回放把這次拷貝的第 7 行 x / y 乘帶的比例，改成一比一取中間 16:9 帶，亮框裡的內容才對得上
+# Texture-copy shaders: agl's texture copy, sampling at (±0.5 + cb0 row 6 z/w) × row 7 x/y + 0.5, rotated about the centre. The tutorial spotlight (screen dimmed, one bright box left) copies the whole picture into a 1920x1080 texture every frame,
+# and the bright box samples it with 16:9 screen coordinates. On pictures wider or taller than 16:9 the replay multiplies row 7 x / y of that copy by the band ratio, so it takes the centred 16:9 band one to one and the box shows what sits under it
+ui_capture_shaders	/Lib/agl/agl_resource.Nin_NX_NVN.release.sarc.zs/agl_common.sharcb#BAHS@0x33a10

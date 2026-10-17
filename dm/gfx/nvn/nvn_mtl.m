@@ -5021,6 +5021,13 @@ static int ui_vs_has(uint64_t k) { int lo = 0, hi = DM_GAME_UI_VS_N - 1; while (
 #define DM_GAME_UI_VS_OPEN {0}
 #endif
 static const uint64_t k_ui_vs_open[] = DM_GAME_UI_VS_OPEN;   // 升序 | ascending
+// 拷貼圖的著色器（遊戲檔案 ui_capture_shaders）：cb0 第 7 行 x/y 是取樣坐標繞中心的縮放，見 ui_capture | texture-copy shaders (game profile ui_capture_shaders): cb0 row 7 x/y scales the sampling coordinate about the centre, see ui_capture
+#ifndef DM_GAME_UI_CAP_VS_N
+#define DM_GAME_UI_CAP_VS_N 0
+#define DM_GAME_UI_CAP_VS {0}
+#endif
+static const uint64_t k_ui_vs_cap[] = DM_GAME_UI_CAP_VS;
+static int ui_vs_cap(uint64_t k) { for (int i = 0; i < DM_GAME_UI_CAP_VS_N; i++) if (k_ui_vs_cap[i] == k) return 1; return 0; }
 static int ui_vs_open(uint64_t k) { int lo = 0, hi = DM_GAME_UI_VS_OPEN_N - 1; while (lo <= hi) { int m = (lo + hi) / 2; if (k_ui_vs_open[m] == k) return 1; if (k_ui_vs_open[m] < k) lo = m + 1; else hi = m - 1; } return 0; }
 // 這次界面繪製是否蓋滿整個視口。ui2d 著色器的常量佈局（翻譯結果，如 ce7eacf8）：階段 0 cb0 開頭 4 行 = 投影矩陣（行主序），接著 3 行 = 模型視圖，
 // 第 33 行 = {寬, 高, 左, 上}；頂點屬性 0 = 四邊形角 (u, v)，局部坐標 (左 + u·寬, 上 − v·高)。讀不到或不是這個佈局（w ≤ 0）就當沒蓋滿
@@ -5044,21 +5051,53 @@ static int ui_read(uint64_t a, uint64_t n, void *dst) {
 // UI band drawing past the band (ui_open_shaders): instead of shrinking the viewport, bind a copy of cb0 with row 0 of the clip transform multiplied by sx (wide) or row 1 by sy (tall). Pixels inside the band match the shrunken viewport
 // (NDC scaled by the band ratio + the whole viewport = NDC mapped into the band), and parts reaching past the 16:9 canvas are no longer clipped at the band edge. The copy holds what the GPU sees at this draw: current memory with this submission's queued inline updates applied in order.
 // Returns 0 when the inline update table is full, the buffer is unreadable or its size is out of range, and the caller falls back to the shrunken viewport. Copies live in a ring buffer; the previous copy is reused for the same address in the same pass with no new inline update in between
-static uint64_t ui_open_patch(double sx, double sy) {
-    enum { RING = 16 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu, la, ls, lp, lg; static size_t at; static int lu = -1; static double lx, ly;
+// GPU 執行到這次繪製時看到的 [a, a + n)：當前內存，再按序疊上本提交裡排著的內聯更新（部分重疊也照疊）。內聯更新表滿了或內存讀不到返回 0
+// The bytes [a, a + n) the GPU sees at this draw: current memory with this submission's queued inline updates applied in order (partial overlaps included). Returns 0 when the inline update table is full or the memory is unreadable
+static int ui_read_merged(uint64_t a, uint64_t n, void *dst_) {
+    uint8_t *dst = dst_; void *mb; uint64_t mo; const uint8_t *src;
+    if (g_upd_over || !mtl_addr(a, n, &mb, &mo) || !(src = [(__bridge id<MTLBuffer>)mb contents])) return 0;
+    memcpy(dst, src + mo, n);
+    for (int i = 0; i < g_nupd; i++) {
+        uint64_t lo = g_upd_lo[i] > a ? g_upd_lo[i] : a, hi = g_upd_hi[i] < a + n ? g_upd_hi[i] : a + n;
+        if (lo < hi) memcpy(dst + (lo - a), g_upd_src[i] + (lo - g_upd_lo[i]), hi - lo);
+    }
+    return 1;
+}
+// cap = 1：改的是拷貼圖著色器的第 7 行 x / y（取樣縮放，ui_capture），不是裁剪變換 | cap = 1: scales row 7 x / y of a texture-copy shader (sampling scale, ui_capture) instead of the clip transform
+static uint64_t ui_open_patch(int cap, double sx, double sy) {
+    enum { RING = 16 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu, la, ls, lp, lg; static size_t at; static int lu = -1, lc = -1; static double lx, ly;
     const p_bind_buf *u = &S.ubo[0][0]; void *mb; uint64_t mo; const uint8_t *src;
-    if (g_upd_over || !u->addr || u->size < 64 || u->size > 4096 || !mtl_addr(u->addr, u->size, &mb, &mo) || !(src = [(__bridge id<MTLBuffer>)mb contents])) return 0;
-    if (la == u->addr && ls == u->size && lp == g_pass.serial && lu == g_nupd && lx == sx && ly == sy) return lg;
+    // 拷貝長度：界面著色器的常量本來就小（≤ 4 KiB）；agl 拷貼圖綁的是 64 KiB 的整塊，著色器只讀到第 7 行，拷前 256 字節 | copy length: the UI shaders' constants are small to begin with (≤ 4 KiB); agl's texture copy binds a whole 64 KiB block but its shader reads only up to row 7, so the first 256 bytes are copied
+    uint64_t usz = cap ? (u->size < 256 ? u->size : 256) : u->size;
+    if (g_upd_over || !u->addr || usz < (cap ? 128u : 64u) || usz > 4096 || !mtl_addr(u->addr, usz, &mb, &mo) || !(src = [(__bridge id<MTLBuffer>)mb contents])) return 0;
+    if (la == u->addr && ls == usz && lp == g_pass.serial && lu == g_nupd && lc == cap && lx == sx && ly == sy) return lg;
     if (!ring) { ring = [g_dev newBufferWithLength:RING options:MTLResourceStorageModeShared]; res_add(ring); ring_gpu = ring.gpuAddress; }
-    size_t n = (u->size + 255) & ~(size_t)255; if (at + n > RING) at = 0;
-    uint8_t *dst = (uint8_t *)ring.contents + at; memcpy(dst, src + mo, u->size);
+    size_t n = (usz + 255) & ~(size_t)255; if (at + n > RING) at = 0;
+    uint8_t *dst = (uint8_t *)ring.contents + at; memcpy(dst, src + mo, usz);
     for (int i = 0; i < g_nupd; i++) {   // 按序疊上本提交的內聯更新 | apply this submission's inline updates in order
-        uint64_t lo = g_upd_lo[i] > u->addr ? g_upd_lo[i] : u->addr, hi = g_upd_hi[i] < u->addr + u->size ? g_upd_hi[i] : u->addr + u->size;
+        uint64_t lo = g_upd_lo[i] > u->addr ? g_upd_lo[i] : u->addr, hi = g_upd_hi[i] < u->addr + usz ? g_upd_hi[i] : u->addr + usz;
         if (lo < hi) memcpy(dst + (lo - u->addr), g_upd_src[i] + (lo - g_upd_lo[i]), hi - lo);
     }
-    float m[8]; memcpy(m, dst, 32); for (int k = 0; k < 4; k++) { m[k] *= (float)sx; m[4 + k] *= (float)sy; } memcpy(dst, m, 32);
-    la = u->addr; ls = u->size; lp = g_pass.serial; lu = g_nupd; lx = sx; ly = sy; lg = ring_gpu + at; at += n;
+    if (cap) { float r7[2]; memcpy(r7, dst + 7 * 16, 8); r7[0] *= (float)sx; r7[1] *= (float)sy; memcpy(dst + 7 * 16, r7, 8); }
+    else { float m[8]; memcpy(m, dst, 32); for (int k = 0; k < 4; k++) { m[k] *= (float)sx; m[4 + k] *= (float)sy; } memcpy(dst, m, 32); }
+    la = u->addr; ls = usz; lp = g_pass.serial; lu = g_nupd; lc = cap; lx = sx; ly = sy; lg = ring_gpu + at; at += n;
     return lg;
+}
+// 教學聚光的畫面拷貝（ui_capture_shaders）：遊戲把整個畫面（出圖尺寸的場景緩衝）拷進一張 16:9 貼圖，亮框再按 16:9 螢幕坐標取它。
+// 畫面不是 16:9 時，界面在中間的 16:9 帶裡，整張壓扁拷過去就和亮框取的位置錯開。目標正好是帶的大小、取樣的貼圖是出圖尺寸時，取樣縮放乘帶比例（*kx、*ky），一比一取帶
+// The tutorial spotlight's screen copy (ui_capture_shaders): the game copies the whole picture (the output-size scene buffer) into a 16:9 texture, and the bright box samples it with 16:9 screen coordinates.
+// When the picture is not 16:9 the UI sits in the centred 16:9 band, and squeezing the whole picture into the copy puts it out of line with where the box samples. When the target is exactly the band's size and the sampled texture has the output size, the sampling scale is multiplied by the band ratio (*kx, *ky) to take the band one to one
+static int ui_capture(NSUInteger tw, NSUInteger th, double *kx, double *ky) {
+    int W = g_ui_scr_w, H = g_ui_scr_h; if (!DM_GAME_UI_CAP_VS_N || W < 64 || H < 64 || W * 9 == H * 16 || !S.prog) return 0;
+    long bw = W * 9 > H * 16 ? lround(H * 16.0 / 9) : W, bh = W * 9 > H * 16 ? H : lround(W * 9.0 / 16);
+    if ((long)tw != bw || (long)th != bh) return 0;
+    __unsafe_unretained NvProg *pr = prog_get(S.prog); if (!pr || !pr->sh[0] || !pr->sh[1] || !ui_vs_cap(strtoull(pr->sh[0]->key, 0, 16))) return 0;
+    NvShader *f = pr->sh[1]; int src = 0;
+    for (int i = 0; i < f->rf.nb && !src; i++) { const nvn_rbind *b = &f->rf.b[i]; if (b->kind != NVN_RB_TEX && b->kind != NVN_RB_TEXU) continue;
+        int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_handle(1, b->reg, b->off) & 0xfffff) : b->reg < 128 ? (int)(S.tex[1][b->reg] & 0xfffff) : 0;
+        pthread_mutex_lock(&g_rmu); src = tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].t.d.width == (uint32_t)W && g_treg[tid].t.d.height == (uint32_t)H; pthread_mutex_unlock(&g_rmu); }
+    if (!src) return 0;
+    *kx = (double)bw / W; *ky = (double)bh / H; return 1;
 }
 static int ui_cover_screen(int n) {
     const p_bind_buf *u = &S.ubo[0][0]; int sd = S.stream[0].stride;
@@ -5386,10 +5425,11 @@ frz_plain:;
     double bx = 0, bs = 1, by = 0, bt = 1; int uopen = 0;   // 界面帶（ui_band）：x' = bx + x·bs，y' = by + y·bt；不進帶時恆等 | UI band (ui_band): x' = bx + x·bs, y' = by + y·bt; identity when not banded
     ui_band(dw ? dw->count : di->count, tw, th, &bx, &bs, &by, &bt, &uopen);
     // 能畫出帶外的界面繪製：cb0 換成乘過帶比例的拷貝，視口不縮（vb* 恆等）；拷貝做不出就照舊縮視口 | UI draws that may reach past the band: cb0 swapped for a copy scaled by the band ratio and the viewport left whole (vb* identity); without a copy the viewport shrinks as before
-    uint64_t og = uopen ? ui_open_patch(bs, bt) : 0;
+    uint64_t og = uopen ? ui_open_patch(0, bs, bt) : 0;
+    { double kx, ky; if (!uopen && ui_capture(tw, th, &kx, &ky)) og = ui_open_patch(1, kx, ky); }   // 聚光的畫面拷貝只取帶 | the spotlight's screen copy takes only the band
     if (og || g_ui_open_gpu) g_args_dirty[0] = 1;
     g_ui_open_gpu = og;
-    double vbx = og ? 0 : bx, vbs = og ? 1 : bs, vby = og ? 0 : by, vbt = og ? 1 : bt;
+    double vbx = og && uopen ? 0 : bx, vbs = og && uopen ? 1 : bs, vby = og && uopen ? 0 : by, vbt = og && uopen ? 1 : bt;
     if (g_ui_rect_fn && dw && dw->count == 4 && S.nattr == 2 && S.stream[0].stride == 20) { double uy = 0, uh = 1; g_ui_rect_fn(&uy, &uh);
         if (uh > 0 && uh < 1) { if (ui_cover_all(uh)) vs = 1 / uh; else if (uy > 0) { so = lround(uy * th); if (ui_mat_ok()) moff = 2 * uy; else { vo = so; static int n; if (n++ < 4) MLOG("界面下移：投影矩陣這次讀不到，退回挪視口（通道 %llu）", g_stat_pass); } } } }
     if (moff != g_ui_moff) { g_ui_moff = moff; g_args_dirty[0] = 1; }
@@ -5402,7 +5442,7 @@ frz_plain:;
         long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y <= 0 ? 0 : R.sc.y + so, x1 = (long)R.sc.x + R.sc.w, y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
         // 畫出帶外的繪製：剪裁蓋住整個視口就不收進帶（否則又在帶邊裁掉）；真的剪一塊（捲動清單等）才照帶映射 | drawing past the band: a scissor covering the whole viewport is not pulled into the band (it would clip at the band edge again); a real sub-rectangle (scrolling lists etc.) is mapped into the band
         double cvx = S.has_vp ? S.vp[0][0] : 0, cvy = S.has_vp ? S.vp[0][1] : 0, cvw = S.has_vp ? S.vp[0][2] : tw, cvh = S.has_vp ? S.vp[0][3] : th;
-        int whole = og && R.sc.x <= cvx + 0.5 && R.sc.y <= cvy + 0.5 && R.sc.x + R.sc.w >= cvx + cvw - 0.5 && R.sc.y + R.sc.h >= cvy + cvh - 0.5;
+        int whole = og && uopen && R.sc.x <= cvx + 0.5 && R.sc.y <= cvy + 0.5 && R.sc.x + R.sc.w >= cvx + cvw - 0.5 && R.sc.y + R.sc.h >= cvy + cvh - 0.5;
         if (bs != 1 && !whole) { x0 = lround(bx + x0 * bs); x1 = lround(bx + x1 * bs); }
         if (bt != 1 && !whole) { y0 = lround(by + y0 * bt); y1 = lround(by + y1 * bt); }
         if (x1 > (long)tw) x1 = tw; if (y1 > (long)th) y1 = th;
