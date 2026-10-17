@@ -292,6 +292,48 @@ int main(void) {
         P(nvnMemoryPoolFinalize)(&wp);
     }
 
+    // 6c2. WriteTexels 區域直寫：結果須與「解出整級 → 改區域 → 排回」逐字節相同（銀河戰士 生存恐懼的小地圖每個紋素寫一次，原先每次整級來回）。
+    //      RGBA8 100×37（寬不是 GOB 整數倍）、BC1 64×64（4×4 塊，8 字節一塊）、RGBA16F 33×17 兩層數組；每種若干區域，含 1×1、整行、跨 GOB 與整級
+    // 6c2. WriteTexels region writes: the result must be byte-identical to "decode the whole level → patch the region → re-encode" (Metroid Dread's minimap writes one texel at a time, which used to cost a whole-level round trip each).
+    //      RGBA8 100×37 (width not a whole number of GOBs), BC1 64×64 (4×4 blocks, 8 bytes per block), RGBA16F 33×17 two-layer array; several regions each, including 1×1, a whole row, GOB-crossing and the whole level
+    {
+        static uint8_t wtmem[1 << 18] __attribute__((aligned(16384)));
+        NVNmemoryPoolBuilder wb2; NVNmemoryPool wtp; P(nvnMemoryPoolBuilderSetDevice)(&wb2, &dev); P(nvnMemoryPoolBuilderSetDefaults)(&wb2);
+        P(nvnMemoryPoolBuilderSetStorage)(&wb2, wtmem, sizeof wtmem); P(nvnMemoryPoolBuilderSetFlags)(&wb2, 0x24); P(nvnMemoryPoolInitialize)(&wtp, &wb2);
+        struct { int fmt, w, h, layers; int rg[5][4]; } cs[] = {
+            {NVN_FORMAT_RGBA8, 100, 37, 1, {{0, 0, 1, 1}, {99, 36, 1, 1}, {13, 5, 40, 9}, {0, 20, 100, 1}, {0, 0, 100, 37}}},
+            {NVN_FORMAT_RGBA_DXT1, 64, 64, 1, {{0, 0, 4, 4}, {60, 60, 4, 4}, {16, 8, 32, 20}, {0, 32, 64, 4}, {0, 0, 64, 64}}},
+            {NVN_FORMAT_RGBA16F, 33, 17, 2, {{32, 16, 1, 1}, {1, 2, 30, 13}, {0, 0, 33, 1}, {5, 9, 17, 8}, {0, 0, 33, 17}}},
+        };
+        int bad = 0, n = 0; uint32_t seed = 12345;
+        for (unsigned c = 0; c < sizeof cs / sizeof cs[0]; c++) {
+            NVNtextureBuilder b; NVNtexture t; P(nvnTextureBuilderSetDevice)(&b, &dev); P(nvnTextureBuilderSetDefaults)(&b);
+            P(nvnTextureBuilderSetTarget)(&b, cs[c].layers > 1 ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D);
+            P(nvnTextureBuilderSetSize3D)(&b, cs[c].w, cs[c].h, cs[c].layers); P(nvnTextureBuilderSetFormat)(&b, cs[c].fmt);
+            P(nvnTextureBuilderSetStorage)(&b, &wtp, 0); P(nvnTextureInitialize)(&t, &b);
+            const tex_t *tt = (const tex_t *)&t; int bw, bh, bpb = nvn_fmt_bpb(cs[c].fmt, &bw, &bh);
+            size_t lp = (size_t)((cs[c].w + bw - 1) / bw) * bpb, lr = (size_t)(cs[c].h + bh - 1) / bh;
+            for (int k = 0; k < 5; k++) {
+                for (size_t i = 0; i < tt->L.size; i++) wtmem[i] = (uint8_t)(seed = seed * 1103515245u + 12345u) >> 3;   // 舊內容隨機 | random old content
+                static uint8_t want[1 << 18], lin[1 << 16], src[1 << 16];
+                int x = cs[c].rg[k][0], y = cs[c].rg[k][1], w = cs[c].rg[k][2], h = cs[c].rg[k][3], z = cs[c].layers - 1;
+                size_t wbb = (size_t)((w + bw - 1) / bw) * bpb, hbb = (size_t)(h + bh - 1) / bh;
+                for (size_t i = 0; i < wbb * hbb; i++) src[i] = (uint8_t)(seed = seed * 1103515245u + 12345u) >> 5;
+                memcpy(want, wtmem, tt->L.size);   // 期望：整級解出、改、排回（只動最後一層） | expected: decode the whole level, patch, re-encode (only the last layer)
+                nvn_deswizzle(&tt->d, 0, (unsigned)z, want, lin, lp);
+                for (size_t r = 0; r < hbb; r++) memcpy(lin + ((size_t)y / bh + r) * lp + (size_t)(x / bw) * bpb, src + r * wbb, wbb);
+                nvn_swizzle(&tt->d, 0, (unsigned)z, lin, lp, want); (void)lr;
+                NVNtextureView vw; P(nvnTextureViewSetDefaults)(&vw); P(nvnTextureViewSetLayers)(&vw, z, 1);
+                NVNcopyRegion rg = {x, y, 0, w, h, 1};
+                write_texels(tt, cs[c].layers > 1 ? (const view_t *)&vw : NULL, &rg, src, 0, 0);
+                n++; if (memcmp(want, wtmem, tt->L.size)) bad++;
+            }
+            P(nvnTextureFinalize)(&t);
+        }
+        EXPECT("WriteTexels 區域直寫與整級來回逐字節相同（15 例）", 0, bad); EXPECT("WriteTexels 區域例數", 15, n);
+        P(nvnMemoryPoolFinalize)(&wtp);
+    }
+
     // 6d. 生命週期：掛起返回時在途 GPU 工作為 0；掛起期間提交被擋住，恢復後放行
     // 6d. Lifecycle: in-flight GPU work is 0 when suspend returns; submits are blocked during suspend and let through after resume
     {

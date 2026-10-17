@@ -1638,12 +1638,36 @@ NVN(nvnCommandBufferDownsampleTextureView, void, NVNcommandBuffer *c, const NVNt
 // CPU 寫貼圖（NVN WriteTexels）：貼圖存儲在池內存裡、按 Tegra 塊線性排布；整級解出 → 改區域 → 排回。寫前解寫保護並標髒，回放層下次用到時重傳
 // CPU texture write (NVN WriteTexels): texture storage lives in pool memory in Tegra block-linear layout; decode the whole level → patch the region → re-encode.
 // Write protection is lifted and the range marked dirty first, so the replay layer re-uploads it the next time it is used
+// 非 3D 貼圖：按塊線性地址只寫區域內的字節，不解整級。銀河戰士 生存恐懼的小地圖（main+0x160e80）每個紋素調一次 WriteTexels（1×1 區域），
+// 原先每次都解出、改寫、排回整級，主線程幾分鐘後整幀耗在這裡（175 s 起幀數停住）。區域越界或格式不支持返回 −1，退回整級做法（上游 a9c56fd）
+// Non-3D textures: only the bytes inside the region are written, by block-linear address, without decoding the whole level. Metroid Dread's minimap (main+0x160e80) calls WriteTexels once per texel (a 1×1 region);
+// previously every call decoded, patched and re-encoded the whole level, and after a few minutes the main thread spent whole frames there (frames stopped from 175 s). Returns −1 when the region is out of range or the format unsupported, falling back to the whole-level path (upstream a9c56fd)
+static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const NVNcopyRegion *r, const uint8_t *src, size_t row, int bw, int bh, int bpb) {
+    uint32_t row_bytes, rows, slices, gbpb; uint64_t base; unsigned th, td;
+    if (nvn_deswizzle_geom(&t->d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &gbpb) || (int)gbpb != bpb || r->xoffset < 0 || r->yoffset < 0) return -1;
+    uint32_t x0 = (uint32_t)(r->xoffset / bw) * (uint32_t)bpb, y0 = (uint32_t)(r->yoffset / bh);
+    size_t wb = (size_t)((r->width + bw - 1) / bw) * (size_t)bpb, hb = (size_t)((r->height + bh - 1) / bh);
+    if (x0 + wb > row_bytes || y0 + hb > rows) return -1;
+    for (size_t y = 0; y < hb; y++)
+        for (size_t x = 0; x < wb;) {   // GOB 內 16 字節一段連續 | 16-byte runs are contiguous within a GOB
+            uint32_t bx = x0 + (uint32_t)x; size_t n = 16 - bx % 16; if (n > wb - x) n = wb - x;
+            memcpy(t->mem + base + nvn_bl_offset(bx, y0 + (uint32_t)y, 0, row_bytes, rows, th, td), src + y * row + x, n); x += n;
+        }
+    return 0;
+}
 static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
     if (!t->mem) { LOG("【紅】WriteTexels：貼圖沒有存儲"); return; }
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     if (!bpb) { ONCE_LOG("【紅】WriteTexels：未知格式 %#x", t->d.format); return; }
     unsigned level = v && v->set_levels ? (unsigned)v->base_level : 0, layer0 = v && v->set_layers ? (unsigned)v->min_layer : 0;
     int is3d = t->d.target == NVN_TEXTURE_TARGET_3D, nz = r->depth ? r->depth : 1;
+    if (!is3d) {
+        size_t wb0 = (size_t)((r->width + bw - 1) / bw) * bpb, row0 = row ? row : wb0, img0 = img ? img : row0 * (size_t)((r->height + bh - 1) / bh);
+        dm_guest_write_prepare(t->mem, t->L.size);
+        int ok = 1;
+        for (int z = 0; z < nz && ok; z++) ok = !write_region_bl(t, level, layer0 + (unsigned)(r->zoffset + z), r, src + (size_t)z * img0, row0, bw, bh, bpb);
+        if (ok) { mtl_tex_cpu_written(t); return; }
+    }
     uint32_t lw = t->d.width >> level ? t->d.width >> level : 1, lh = t->d.height >> level ? t->d.height >> level : 1, lz = is3d ? (t->d.depth >> level ? t->d.depth >> level : 1) : 1;
     size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
     size_t wb = (size_t)((r->width + bw - 1) / bw) * bpb, hb = (size_t)(r->height + bh - 1) / bh;
@@ -1651,9 +1675,11 @@ static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r
     if (!img) img = row * hb;
     uint8_t *lin = malloc(lp * lr * lz); if (!lin) die("WriteTexels 分配失敗");
     dm_guest_write_prepare(t->mem, t->L.size);
+    // 區域正好是整級（二維）時每個紋素都被覆蓋，不必先解出舊內容（影片每幀整張寫，1080p 省一次解排布） | when the region is exactly the whole level (2D) every texel is overwritten, so the old content need not be decoded first (movies write whole frames; saves one deswizzle per 1080p frame)
+    int whole = !is3d && !r->xoffset && !r->yoffset && (uint32_t)r->width == lw && (uint32_t)r->height == lh;
     for (int z = 0; z < nz; z++) {
         unsigned layer = is3d ? 0 : layer0 + (unsigned)(r->zoffset + z);
-        if ((is3d && z == 0) || !is3d) if (nvn_deswizzle(&t->d, level, layer, t->mem, lin, lp)) { ONCE_LOG("【紅】WriteTexels 解排布失敗（格式 %#x 目標 %d）", t->d.format, t->d.target); free(lin); return; }
+        if (((is3d && z == 0) || !is3d) && !whole) if (nvn_deswizzle(&t->d, level, layer, t->mem, lin, lp)) { ONCE_LOG("【紅】WriteTexels 解排布失敗（格式 %#x 目標 %d）", t->d.format, t->d.target); free(lin); return; }
         uint8_t *dst = lin + (is3d ? (size_t)(r->zoffset + z) * lp * lr : 0) + (size_t)(r->yoffset / bh) * lp + (size_t)(r->xoffset / bw) * bpb;
         for (size_t y = 0; y < hb; y++) memcpy(dst + y * lp, src + (size_t)z * img + y * row, wb);
         if (!is3d || z == nz - 1) nvn_swizzle(&t->d, level, layer, lin, lp, t->mem);

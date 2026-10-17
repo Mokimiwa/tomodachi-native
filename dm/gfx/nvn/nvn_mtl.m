@@ -2851,6 +2851,7 @@ static size_t arena_alloc(size_t n, id<MTLBuffer> *buf) {
 // ---------- Draw state ----------
 static struct {
     const prog_t *prog;
+    const prog_t *bst[5];      // 按階段綁的程序（NVN 階段位 1 頂點 2 片元 4 幾何 8 / 16 曲面細分，下標同 NvProg.sh），見 bind_stages | program bound per stage (NVN stage bits 1 vertex 2 fragment 4 geometry 8 / 16 tessellation, indices as in NvProg.sh), see bind_stages
     blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms; poly_st poly; ds_st ds;
     va_st attr[16]; int nattr; vs_st stream[16]; int nstream;
     NVNbufferRange vbuf[16];
@@ -2879,6 +2880,35 @@ static void udc_note_draw(NvProg *pr) {
                 && (S.ds.fail_f != NVN_STENCIL_OP_KEEP || S.ds.zfail_f != NVN_STENCIL_OP_KEEP || S.ds.zpass_f != NVN_STENCIL_OP_KEEP
                     || S.ds.fail_b != NVN_STENCIL_OP_KEEP || S.ds.zfail_b != NVN_STENCIL_OP_KEEP || S.ds.zpass_b != NVN_STENCIL_OP_KEEP)) { t->wrote = 1; t->wwhy = 5; }
     }
+}
+// NVN 的 BindProgram(程序, 階段位) 按階段綁：階段位裡的階段換成該程序的（程序為空 = 解綁這些階段），其餘階段不動。
+// 銀河戰士 生存恐懼的深度預通道先 BindProgram(程序, 頂點 | 片元)，再 BindProgram(空, 片元)：只剩頂點著色器、片元解綁，畫深度。
+// 原先任何綁定都整塊替換 S.prog，空程序即「沒綁程序」，預通道每幀約 140 次繪製全被丟掉，深度為空，G-buffer 的深度相等測試一個像素也不過（場景與角色全黑）。
+// 各階段來自同一程序時有效程序就是它（馬力歐、Engage 的綁定都是這種，行為不變）；否則合成一個：宿主自建的 prog_t（只帶序號），序號表裡放各階段取自源程序的 NvProg（片元為空 = 只有頂點的管線）（上游 a9c56fd）
+// NVN's BindProgram(program, stage bits) binds per stage: the stages in the bits take that program's shaders (a null program unbinds them), the other stages stay.
+// Metroid Dread's depth prepass calls BindProgram(program, vertex | fragment), then BindProgram(null, fragment): only the vertex shader remains and depth is drawn.
+// Every bind used to replace S.prog as a whole, a null program meant "no program bound", and the prepass's ~140 draws per frame were all dropped: depth stayed empty, the G-buffer's depth EQUAL test passed no pixel, and scenes and characters were black.
+// When every stage comes from the same program, that program is the effective one (all of Mario's and Engage's binds are like this, so nothing changes for them); otherwise a composite is made: a host-made prog_t carrying only a serial, whose NvProg in the serial table takes each stage from its source program (a null fragment = a vertex-only pipeline) (upstream a9c56fd)
+static const prog_t *bind_stages(const prog_t *p, int stages) {
+    for (int st = 0; st < 5; st++) if (stages >> st & 1) S.bst[st] = p;
+    if (stages & 0x20) return p;   // 計算：照舊整塊替換 | compute: replaced as a whole as before
+    const prog_t *v = S.bst[0];
+    if (!v) return NULL;
+    int same = 1; for (int st = 1; st < 5; st++) if (S.bst[st] && S.bst[st] != v) same = 0;
+    if (same && S.bst[1] == v) return v;
+    enum { NCMP = 64 };
+    static prog_t cp[NCMP]; static const prog_t *ck[NCMP][5]; static uint64_t cs[NCMP][5]; static int ncp, next;
+    for (int i = 0; i < ncp; i++) {
+        int hit = 1; for (int st = 0; st < 5 && hit; st++) hit = ck[i][st] == S.bst[st] && (!S.bst[st] || cs[i][st] == S.bst[st]->serial);
+        if (hit) return &cp[i];
+    }
+    int i = ncp < NCMP ? ncp++ : next++ % NCMP;
+    if (cp[i].serial) serial_del(cp[i].serial);
+    NvProg *o = [NvProg new];
+    for (int st = 0; st < 5; st++) { ck[i][st] = S.bst[st]; cs[i][st] = S.bst[st] ? S.bst[st]->serial : 0; if (S.bst[st]) { __unsafe_unretained NvProg *src = prog_get(S.bst[st]); o->sh[st] = src ? src->sh[st] : nil; } }
+    memset(&cp[i], 0, sizeof cp[i]); cp[i].magic = MAGIC('P', 'R', 'O', 'G'); cp[i].serial = nvn_new_serial(); serial_put(cp[i].serial, o);
+    { static int once; if (!once++) MLOG("按階段綁程序：首個合成程序（頂點 %s 片元 %s）", o->sh[0] ? o->sh[0]->key : "-", o->sh[1] ? o->sh[1]->key : "-"); }
+    return &cp[i];
 }
 static void state_reset(void) {
     memset(&S, 0, sizeof S);
@@ -3675,7 +3705,7 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
 static int state_op(uint32_t op, const void *a) {
     switch (op) {
         case OP_SCISSOR: R.sc = *(const p_scissor *)a; R.has_sc = 1; break;
-        case OP_BIND_PROGRAM: { const prog_t *np = ((const p_bind_program *)a)->prog; if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_dirty_all(); } break; }
+        case OP_BIND_PROGRAM: { const p_bind_program *bp_ = a; const prog_t *np = bind_stages(bp_->prog, bp_->stages); if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_dirty_all(); } break; }
         case OP_BIND_STATE: {
             const p_bind_state *b = a; void *dst = NULL; size_t n = 0;
             blend_st bs;
@@ -4970,7 +5000,7 @@ static void fbx_prepare(NvProg *pr) {
     }
 }
 static void draw(const p_draw *dw, const p_draw_idx *di) {
-    if (!S.prog) { RED_ONCE(18, "繪製前沒有綁定程序"); return; }
+    if (!S.prog) { RED_ONCE(18, "繪製前沒有綁定程序"); PD("Z %llu 繪製跳過：沒有綁定程序", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
     if (g_ruler_truth == 0) {   // 尺子負對照（DM_NVN_RULER_NEG=<片元鍵>）：被測模式下丟掉該著色器的繪製，尺子必須報不等價 | Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
@@ -5046,7 +5076,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         } else if (g_bloomq.state) { RED_ONCE(61, "泛光 1/4 起點：鏈中途出現別的繪製，本幀泛光不完整"); bloomq_reset(); }
       }
     }
-    if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
+    if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) { PD("Z %llu 繪製跳過（開通道前）：兩面全剔", g_stat_pass + !g_enc); return; }
     // 續用的通道可能是少掛深度 / 模板開的（開法 2 / 3 / 4）：這次繪製要的平面沒掛，就在它之前切開（重開時按新前瞻掛）
     // The continued render pass may have been opened with fewer depth / stencil attachments (open modes 2 / 3 / 4): if the plane this draw needs is not attached, split before it (on reopen, attach per the new lookahead)
     if (g_rt_merged && g_enc_mode != 0 && (((S.ds.dt || S.ds.dw) && !g_pass.hd) || (S.ds.st && !g_pass.hs))) {
@@ -5063,7 +5093,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         NSUInteger tw0 = 0, th0 = 0; rt_dims(&tw0, &th0);
         long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y < 0 ? 0 : R.sc.y, x1 = (long)R.sc.x + R.sc.w, y1 = (long)R.sc.y + R.sc.h;
         if (x1 > (long)tw0) x1 = tw0; if (y1 > (long)th0) y1 = th0;
-        if (x1 <= x0 || y1 <= y0) return;
+        if (x1 <= x0 || y1 <= y0) { PD("Z %llu 繪製跳過（開通道前）：剪裁為空（%d,%d %dx%d，目標 %lux%lu）", g_stat_pass + 1, R.sc.x, R.sc.y, R.sc.w, R.sc.h, (unsigned long)tw0, (unsigned long)th0); return; }
     }
 #ifdef NVN_RT_RANGE_TEST
     if (!g_enc) rr_begin();
@@ -5084,7 +5114,7 @@ frz_plain:;
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; fbx_prepare(pr); }
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
-    if (!en) return;
+    if (!en) { PD("Z %llu 繪製跳過：沒開成渲染通道", g_stat_pass); return; }   // Z 行：繪製在這些早退處被丟的原因 | Z lines: why a draw was dropped at these early returns
     if (g_fbx_n) g_fbx_drawn = 1;   // 這次繪製之後副本就舊了 | the copy is stale after this draw
     if (defer_q_draw) defer_replay();
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
@@ -5095,7 +5125,7 @@ frz_plain:;
     if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial) { cur_ps = pso_get(pr, nil); cur_pr = pr; cur_ps_pass = g_pass.serial; g_pso_dirty = !cur_ps; }
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // 下一次繪製重新按自身情況取 | The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
-    if (!ps) return;
+    if (!ps) { PD("Z %llu 繪製跳過：沒有渲染管線（頂點 %s 片元 %s）", g_stat_pass, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-"); return; }
     if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; }
     static id<MTLDepthStencilState> cur_ds; static uint64_t cur_ds_pass;
     if (g_dss_dirty || cur_ds_pass != g_pass.serial) { cur_ds = dss_get(g_pass.hd, g_pass.hs); cur_ds_pass = g_pass.serial; g_dss_dirty = 0; }
@@ -5128,11 +5158,11 @@ frz_plain:;
     if (R.has_sc) {
         long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y <= 0 ? 0 : R.sc.y + so, x1 = (long)R.sc.x + R.sc.w, y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
         if (x1 > (long)tw) x1 = tw; if (y1 > (long)th) y1 = th;
-        if (x1 <= x0 || y1 <= y0) return;
+        if (x1 <= x0 || y1 <= y0) { PD("Z %llu 繪製跳過：剪裁為空（%d,%d %dx%d，目標 %lux%lu）", g_stat_pass, R.sc.x, R.sc.y, R.sc.w, R.sc.h, (unsigned long)tw, (unsigned long)th); return; }
         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
     }
     enc_r_scissor(en, sc);
-    if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
+    if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) { PD("Z %llu 繪製跳過：兩面全剔", g_stat_pass); return; }
     enc_r_cull(en, S.poly.cull == NVN_FACE_FRONT ? MTLCullModeFront : S.poly.cull == NVN_FACE_BACK ? MTLCullModeBack : MTLCullModeNone);
     enc_r_winding(en, S.poly.front == NVN_FRONT_FACE_CCW ? MTLWindingCounterClockwise : MTLWindingClockwise);
     enc_r_fill(en, S.poly.mode == NVN_POLYGON_MODE_LINE ? MTLTriangleFillModeLines : MTLTriangleFillModeFill);
