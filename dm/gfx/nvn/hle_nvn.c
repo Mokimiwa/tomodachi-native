@@ -766,9 +766,10 @@ NVN(nvnCommandBufferBindStorageBuffer, void, NVNcommandBuffer *c, NVNshaderStage
 NVN(nvnCommandBufferBindStorageBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
     for (int i = 0; i < n; i++) *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
 }
-static void bind_handles(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h) {
-    if (n < 0 || n > 32) { LOG("【紅】綁定句柄數 %d", n); return; }
-    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; memcpy(r->h, h, 8 * n);
+static p_bind_handles *bind_handles(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h) {
+    if (n < 0 || n > 32) { LOG("【紅】綁定句柄數 %d", n); return NULL; }
+    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; r->defer = 0; r->src = 0; memcpy(r->h, h, 8 * n);
+    return r;
 }
 // 圖像（可寫貼圖）：句柄 = 貼圖池號（GetImageHandle 原樣返回；遊戲不調 RegisterImage，圖像與貼圖共用登記）
 // Image (writable texture): handle = texture pool index (GetImageHandle returns it as-is; the game does not call RegisterImage, images and textures share registration)
@@ -1603,7 +1604,16 @@ NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcom
 // 組合貼圖句柄（貼圖號 | 採樣器號 << 20）原樣記進貼圖槽：回放層按低 20 位取貼圖、高位取採樣器（nvn_mtl.m NVN_RB_SAMPT）
 // Combined texture handle (texture id | sampler id << 20) is recorded into the texture slot as is: the replay layer takes the texture from the low 20 bits and the sampler from the high bits (nvn_mtl.m NVN_RB_SAMPT)
 NVN(nvnCommandBufferBindTexture, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNtextureHandle h) { uint64_t v = (uint64_t)h; bind_handles(c, OP_BIND_TEX, st, i, 1, &v); }
-NVN_NOPROTO(nvnCommandBufferBindTexturesDeferred, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNtextureHandle *h) { bind_handles(c, OP_BIND_TEX, st, first, n, (const uint64_t *)h); }
+// 「延遲」綁定：GPU 執行這條命令時才去讀 h 指向的句柄，不是錄製時。塞爾達傳說 曠野之息引擎的逐張貼圖綁定（main+0xec2e64）全走它，
+//   傳的是貼圖採樣器對象裡句柄字段的地址、個數 1；命令塊錄一次反復提交，句柄之後才寫進去 / 換掉。原先錄製時就拷走句柄（多是 0），
+//   延遲光照合成通道的貼圖全成了 0 號啞貼圖，整個三維畫面黑。記下地址，回放層讀記錄時現取（bh_fresh，上游 d6cd8a8）
+// "Deferred" binding: the GPU reads the handles h points to when it executes this command, not at recording. The per-texture binding of The Legend of Zelda: Breath of the Wild's engine (main+0xec2e64) always uses it,
+//   passing the address of the handle field in the texture sampler object with a count of 1; command blocks are recorded once and submitted repeatedly, and the handle is written / replaced afterwards. The host used to copy the handles at recording (mostly 0),
+//   so every texture of the deferred lighting composite became the dummy texture 0 and the whole 3D picture was black. The address is recorded and the replay layer reads it when it reads the record (bh_fresh, upstream d6cd8a8)
+NVN_NOPROTO(nvnCommandBufferBindTexturesDeferred, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNtextureHandle *h) {
+    p_bind_handles *r = bind_handles(c, OP_BIND_TEX, st, first, n, (const uint64_t *)h);
+    if (r && h) { r->defer = 1; r->src = (uint64_t)(uintptr_t)h; }
+}
 NVN(nvnCommandBufferBindImage, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNimageHandle h) { uint64_t v = (uint64_t)h; bind_handles(c, OP_BIND_IMG, st, i, 1, &v); }
 NVN(nvnCommandBufferBindVertexBuffer, void, NVNcommandBuffer *c, int i, NVNbufferAddress a, size_t n) { NVNbufferRange r = {a, n}; h_nvnCommandBufferBindVertexBuffers(c, i, 1, &r); }
 

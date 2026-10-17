@@ -130,7 +130,9 @@ typedef struct { int32_t first, n; uint32_t st[16]; } p_bind_vattr;
 typedef struct { int32_t first, n; vs_st st[16]; } p_bind_vstream;
 typedef struct { int32_t first, n; NVNbufferRange r[16]; } p_bind_vbuf;
 typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UBO / SSBO
-typedef struct { int32_t stage, first, n; uint64_t h[32]; } p_bind_handles; // 分離貼圖 / 採樣器句柄 | Separate texture / sampler handles
+// defer / src：BindTexturesDeferred 的句柄在執行時才從 src 讀（錄製時的 h 只是兜底），回放層讀記錄前用 bh_fresh 刷新（nvn_mtl.m，上游 d6cd8a8）
+// defer / src: the handles of BindTexturesDeferred are read from src at execution time (h at recording time is only a fallback); the replay layer refreshes them with bh_fresh before reading the record (nvn_mtl.m, upstream d6cd8a8)
+typedef struct { int32_t stage, first, n, defer; uint64_t src; uint64_t h[32]; } p_bind_handles; // 分離貼圖 / 採樣器句柄 | Separate texture / sampler handles
 typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // which：0 值掩碼 1 寫掩碼 2 參考值 | which: 0 value mask 1 write mask 2 reference value
 typedef struct { float factor, units, clamp; } p_poly_offset;
 typedef struct { int32_t on; } p_depth_clamp;
