@@ -26,7 +26,7 @@
 |---|---|
 | **Mac 上可以玩** | 小島導覽、幫島取名、建立 Mii（回答問題或自己捏），有聲音 |
 | **Mac app** | 選單、全螢幕、暫停、截圖、60 FPS、MetalFX 放大，滑鼠、觸控板、鍵盤，13 種遊戲語言 |
-| **iPhone、iPad** | 還沒打包 |
+| **iPhone、iPad** | 在 iPad Air 11 吋（M2）上能開、照螢幕形狀滿版、有聲音，30 或 60 FPS；按 HOME 有設定（遊戲語言、畫面、按鍵、存檔備份），長按 App 圖示可以直接開；還沒玩完整個流程 |
 
 ## 開始玩（Mac）
 
@@ -40,6 +40,44 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 ```
 
 3. 在「應用程式」裡打開 **Tomodachi Life**。
+
+## 裝到自己的 iPhone 或 iPad
+
+用你自己的 Apple 開發者團隊簽名，可以從 Mac 直接裝到自己的裝置，不用側載工具。只給自己用：App 裡是從你的遊戲改寫出來的程式。
+
+需要準備：英文版 [Pack an IPA](README.md#pack-an-ipa) 列的東西（含你自己的 NSP 和 `prod.keys`）、XcodeGen、在 Xcode 登入你的開發者帳號（Xcode → 設定 → 帳號），以及團隊 ID（同一頁）和裝置的 UDID（`xcrun devicectl list devices`）。
+
+1. 改寫程式、做 iOS 著色器，並保留解出的遊戲檔（同時會出一個沒簽名的 IPA，可以不管）：
+
+   ```
+   python3 scripts/build_ipa_from_nsp.py ~/Games/Tomodachi -k ~/keys/prod.keys --keep-extracted
+   ```
+
+2. 出簽好名的 App。第一次要用 USB 接上裝置並解鎖，Xcode 才能把它加進你的團隊：
+
+   ```
+   B=~/Games/Tomodachi/010051F0207B2000_build
+   SIGN_TEAM=<團隊 ID> SIGN_DEVICE=<裝置 UDID> GAME=010051F0207B2000 W=$B/ipa PATCHED=$B/patched_v0 \
+     ROMFS=$B/extract/v0/RomFS MSL_IOS=$B/shader/ios dm/ios/tools/build_ipa.sh
+   ```
+
+   腳本最後會印出 App 的位置和下面兩行指令。App 約 500 MB，大部分是著色器。
+
+3. 安裝：`xcrun devicectl device install app --device <裝置 UDID> <DmIOS.app 的路徑>`
+
+4. 把遊戲資料拷進 App，只要做一次（約 6 GB，之後重裝會留著）：
+
+   ```
+   xcrun devicectl device copy to --device <裝置 UDID> --domain-type appDataContainer \
+     --domain-identifier org.nxnative.010051f0207b2000 --source $B/extract/v0/RomFS --destination Documents/romfs
+   ```
+
+5. 在裝置上打開 App。
+
+- **更新：** 用同樣的方式裝新版，只換 App，存檔和遊戲資料都會留著。從裝置上刪掉 App 會連這兩樣一起刪掉。
+- **之後不用接線：** 用 USB 配對過一次，在同一個 Wi-Fi 下 devicectl 就能直接裝。
+- **執行：** 裝好之後，App 不需要 Mac 也能開。
+- **能開多久：** 看描述檔的期限。付費的開發者團隊是一年；用免費 Apple ID 簽的，7 天後就打不開，要重裝。
 
 ## Mac app
 

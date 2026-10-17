@@ -26,7 +26,7 @@ This is a fork of [nxnative](https://github.com/seedds/smbw-mobile) by seedds, w
 |---|---|
 | **Playable on the Mac** | The island tour, naming the island, creating Miis (by questions or in the editor), with sound |
 | **Mac app** | Menus, full screen, pause, screenshots, 60 FPS, MetalFX upscaling, mouse, trackpad and keyboard, 13 game languages |
-| **iPhone and iPad** | Not packaged yet |
+| **iPhone and iPad** | Starts and runs on an iPad Air 11-inch (M2) at the screen's shape, with sound, at 30 or 60 FPS; settings and save backups behind HOME; not played through yet |
 
 ## Quick start (Mac)
 
@@ -79,13 +79,13 @@ Details per part are in [How it works in detail](#how-it-works-in-detail).
 
 | Game | Profile | NSPs the folder needs | State |
 |---|---|---|---|
-| Tomodachi Life: Living the Dream | `010051F0207B2000` | the base game (1.0.0) | **Playable on the Mac with sound.** The island tour, island name and Mii creation work; see [Known issues](#known-issues). Not packaged for iOS yet |
+| Tomodachi Life: Living the Dream | `010051F0207B2000` | the base game (1.0.0) | **Playable on the Mac with sound.** The island tour, island name and Mii creation work; see [Known issues](#known-issues). On an iPad it starts and runs; not played through yet |
 
 For any other game, the script writes a survey instead of an IPA (see [Port another game](#port-another-game)).
 
 ## Pack an IPA
 
-Tomodachi Life has not been run on iOS yet. To play Super Mario Bros. Wonder or Fire Emblem Engage on an iPhone or iPad, use [nxnative](https://github.com/seedds/smbw-mobile).
+Tomodachi Life has been tried on one iPad so far. To play Super Mario Bros. Wonder or Fire Emblem Engage on an iPhone or iPad, use [nxnative](https://github.com/seedds/smbw-mobile).
 
 You need:
 - a Mac with Xcode, XcodeGen, the .NET SDK 10, zstd and spirv-cross;
@@ -128,6 +128,53 @@ What the script does:
 
 Everything it writes stays in the NSP folder: intermediate files and logs in `<id>_build/`, the IPA next to the NSPs. The extracted game files are deleted at the end unless you pass `--keep-extracted`. It exits with 0 when done and 1 on an error. The first run takes tens of minutes, mostly for the shader libraries; later runs reuse them from the cache.
 
+## Install on your own iPhone or iPad
+
+A build signed with your own Apple developer team installs straight from the Mac, with no sideloading tool. Keep it for your own use: the app holds code rewritten from your copy of the game.
+
+You need:
+- everything listed under [Pack an IPA](#pack-an-ipa), including your own NSPs and `prod.keys`;
+- XcodeGen, and Xcode signed in to your Apple developer account (Xcode → Settings → Accounts);
+- your team ID, shown on the same Accounts page, and your device's UDID (`xcrun devicectl list devices`).
+
+Steps:
+
+1. Rewrite the code and build the iOS shaders once, keeping the extracted game files. This also writes an unsigned IPA, which you can ignore.
+
+   ```
+   python3 scripts/build_ipa_from_nsp.py ~/Games/Tomodachi -k ~/keys/prod.keys --keep-extracted
+   ```
+
+2. Build the signed app. The first time, connect the device by USB and unlock it, so that Xcode can add it to your team.
+
+   ```
+   B=~/Games/Tomodachi/010051F0207B2000_build
+   SIGN_TEAM=<team ID> SIGN_DEVICE=<device UDID> GAME=010051F0207B2000 W=$B/ipa PATCHED=$B/patched_v0 \
+     ROMFS=$B/extract/v0/RomFS MSL_IOS=$B/shader/ios dm/ios/tools/build_ipa.sh
+   ```
+
+   The script prints where the app is and the two commands below. The app is about 500 MB, mostly shader libraries.
+
+3. Install it:
+
+   ```
+   xcrun devicectl device install app --device <device UDID> <path to DmIOS.app>
+   ```
+
+4. Copy the game data into the app, once. It is about 6 GB, and later installs keep it.
+
+   ```
+   xcrun devicectl device copy to --device <device UDID> --domain-type appDataContainer \
+     --domain-identifier org.nxnative.010051f0207b2000 --source $B/extract/v0/RomFS --destination Documents/romfs
+   ```
+
+5. Open the app on the device.
+
+- **Updates:** install a new build the same way. Only the app is replaced; saves and game data stay. Deleting the app from the device removes both.
+- **No cable needed later:** once a device has been paired over USB, devicectl also reaches it over the same Wi-Fi.
+- **Running:** the app needs nothing from the Mac once installed.
+- **How long it keeps opening:** as long as its provisioning profile is valid. With a paid developer team that's a year; a build signed with a free Apple ID stops opening after 7 days and has to be installed again.
+
 ## Mac app
 
 Once a game has been brought up on the Mac (its workspace holds the RomFS, the rewritten modules and the Mac shader libraries), `scripts/build_mac_app.py` packs it into a double-clickable `.app` with the game's icon:
@@ -152,13 +199,12 @@ In the app:
 
 Sign and install the IPA with your own tool (AltStore, Sideloadly, LiveContainer, ...). The app takes its name and icon from the base game NSP, and its bundle ID is `org.nxnative.<base game title ID>` (for example `org.nxnative.010051f0207b2000`); `APP_NAME` / `BUNDLE_ID` in the script override them. Your signing tool may replace the bundle ID.
 
-- **Controls:** a translucent touch gamepad over the picture:
-  - ZL above L in the top-left corner, ZR above R in the top-right;
-  - − and + side by side at the top centre;
-  - the left stick in the bottom-left corner, and A/B/X/Y (Nintendo positions) in the bottom-right, the same size and mirrored.
-
-  There is no on-screen D-pad or right stick. A connected physical controller hides the touch gamepad and keeps every button, mapped by position.
-- **Saves and logs** live in the app's Documents, visible in the Files app: `save/`, `log.txt` (the previous run in `log.prev.txt`) and `pso_user.tsv`. When reporting a problem, send `log.txt`.
+- **Layout:** held upright, the game picture is on top and the controller below it; held sideways, the picture fills the screen and the keys float over it. On iPhone Duo the fold stays empty, and the outer display uses the same layout. The picture takes the shape of the screen, up to 1920 × 1350, so a 4:3 iPad shows thin bars above and below.
+- **Controls:** two sticks (the left one larger; tap a stick for L3 / R3), a D-pad, A/B/X/Y in Nintendo positions, ZL / L, R / ZR and − / +. Tap the picture to touch the game's screen. HOME pauses the game and opens the settings; the capture button saves the picture to `Documents/Screenshots`. A connected physical controller hides the touch keys and keeps every button, mapped by position.
+- **Text entry:** an input row above the controller, with paste and the system keyboard.
+- **Settings (HOME):** game language (the game's 13; by default it follows the device language), aspect ratio (fill the screen or 16:9), MetalFX upscaling, frame rate (30 or 60 FPS), on-screen buttons and their opacity, and save data: back up now, export to Files, restore a backup, start over. Language, aspect ratio, frame rate, restore and start over apply the next time the game opens; restore and start over first move the current save into `Documents/Backups` and never delete it. Long-press the app icon on the Home Screen to open a settings page directly.
+- **The previous layout:** `DM_FRONT=classic` in `Documents/env.txt` brings back the landscape-only layout with a translucent gamepad over the picture.
+- **Saves and logs** live in the app's Documents, visible in the Files app: `save/`, `Backups/`, `log.txt` (the previous run in `log.prev.txt`) and `pso_user.tsv`. When reporting a problem, send `log.txt`.
 - **Reinstalling:** sideloading tools may give a reinstalled app a new data folder; LiveContainer did, under its `Data/Application/<UUID>/Documents`. To keep your saves and prewarm list, copy them from the old folder while the app is closed.
 - **Switches without rebuilding:** environment switches can go in `Documents/env.txt` (one `KEY=VALUE` per line). Game files are also accepted at `Documents/romfs`.
 
@@ -227,6 +273,10 @@ Notes on these steps:
 - `DM_ENV_FILE=` bakes environment switches into the app, and `DM_DISPLAY_NAME=` renames it.
 - If Xcode's Locations setting puts products in a custom place, the script finds the app through the build log.
 - hactool cannot read every update (Mario 1.2.1's patch NCA gives "Invalid BKTR layout!"), which is why `nx_extract` uses LibHac.
+- The shader translator needs .NET 10. If the Mac's default .NET is older, point `DOTNET_ROOT` at a .NET 10 install (Homebrew's is under `/opt/homebrew/Cellar/dotnet/<version>/libexec`).
+- iOS can't patch code at run time, so `gen_embed.py` also embeds each code page that an optional cut changes (60 FPS is one), already patched; the loader maps that copy in place of the original page at boot when `DM_OPTIONS` names the cut. One build covers both frame rates.
+- `build_ipa.sh` stops when the iOS shader set has fewer libraries than the Mac build cache, since the missing ones would fail to load on the device; `MSL_PARTIAL=1` packages anyway.
+- The iOS simulator cannot run the game: its SDK has no Metal 4. `dm/ios/tools/build_preview.sh` builds the front end alone, with a still picture in place of the game, for checking the layout in the simulator.
 
 ## Prewarm lists
 
