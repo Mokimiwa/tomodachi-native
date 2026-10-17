@@ -285,6 +285,21 @@ void mtl_set_upscale(int on);
 static int fps_pref(void) { return (int)[NSUserDefaults.standardUserDefaults integerForKey:@"FrameRate"] == 60 ? 60 : 30; }
 static int upscale_pref(void) { id v = [NSUserDefaults.standardUserDefaults objectForKey:@"Upscale"]; return v ? [v boolValue] : 1; }
 
+// 雙擊標題欄進全螢幕：遊戲畫面形狀固定，系統的「縮放 / 填滿」只會給一個大一點的視窗。系統設定成「縮到最小」或「不動作」時照系統；雙擊紅黃綠按鈕不管
+// Double-clicking the title bar enters full screen: the picture keeps its shape, so the system's Zoom / Fill only gives a larger window. When the system setting is Minimize or Do Nothing the system handles it; double-clicks on the traffic-light buttons are left alone
+@interface DMWindow : NSWindow
+@end
+@implementation DMWindow
+- (void)sendEvent:(NSEvent *)e {
+    if (e.type == NSEventTypeLeftMouseDown && e.clickCount == 2 && !(self.styleMask & NSWindowStyleMaskFullScreen) && e.locationInWindow.y >= NSMaxY(self.contentLayoutRect)) {
+        NSUserDefaults *d = NSUserDefaults.standardUserDefaults; NSString *act = [d stringForKey:@"AppleActionOnDoubleClick"];
+        int sys = [d boolForKey:@"AppleMiniaturizeOnDoubleClick"] || [act isEqualToString:@"Minimize"] || [act isEqualToString:@"None"];
+        if (!sys && ![[self.contentView.superview hitTest:e.locationInWindow] isKindOfClass:NSButton.class]) { [self toggleFullScreen:nil]; return; }
+    }
+    [super sendEvent:e];
+}
+@end
+
 // ---------- 菜單與窗口代理 | Menus and the window delegate ----------
 @interface DMApp : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation>
 @end
@@ -357,6 +372,9 @@ static int upscale_pref(void) { id v = [NSUserDefaults.standardUserDefaults obje
 - (void)windowDidFailToEnterFullScreen:(NSWindow *)w { (void)w; LOG("【紅】前端：進全螢幕失敗"); }
 - (void)windowDidFailToExitFullScreen:(NSWindow *)w { (void)w; LOG("【紅】前端：退出全螢幕失敗"); }
 - (BOOL)windowShouldClose:(NSWindow *)w { (void)w; [NSApp terminate:self]; return NO; }   // 關窗 = 退出（先問） | closing the window = quitting (asks first)
+// 「縮放」（視窗選單、按住 Option 點綠色按鈕）也直接進全螢幕，理由同 DMWindow 的雙擊標題欄
+// Zoom (the Window menu, Option-clicking the green button) also enters full screen, for the same reason as DMWindow's title-bar double-click
+- (BOOL)windowShouldZoom:(NSWindow *)w toFrame:(NSRect)f { (void)f; if (!(w.styleMask & NSWindowStyleMaskFullScreen)) [w toggleFullScreen:nil]; return NO; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
     (void)app; capture_set(0);
     NSAlert *a = [NSAlert new]; a.messageText = [NSString stringWithFormat:T(T_QUIT_Q), app_name()]; a.informativeText = T(T_QUIT_INFO);
@@ -445,7 +463,7 @@ void front_run(void (*guest)(void)) {
         g_app = [DMApp new]; NSApp.delegate = g_app;
         menus_build(); mtl_set_upscale(upscale_pref());
         NSSize pic = picture_size(); NSRect r = NSMakeRect(0, 0, 1280, round(1280 * pic.height / pic.width));
-        NSWindow *win = [[NSWindow alloc] initWithContentRect:r
+        NSWindow *win = [[DMWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];
         g_win = win; win.delegate = g_app;
