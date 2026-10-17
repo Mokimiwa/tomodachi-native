@@ -5,8 +5,7 @@
 // guest address space (heap, alias region, stack) and in each module's data segment are written to <prefix>_<frame>.bin for offline comparison: e.g. one snapshot before and one after pushing the stick, to find the cursor variable whose change equals the hand's movement.
 // File format: a series of records { u64 address; u64 length; length bytes }; addresses are host addresses (guest and host share one address space). The game keeps running while a snapshot is taken, so keep the input still around it.
 #include "dm.h"
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include <mach/mach.h>   // 用 vm_region_64，不用 mach_vm.h（iOS SDK 不給）；64 位系統上兩者同寬 | vm_region_64 instead of mach_vm.h (the iOS SDK does not provide it); both are the same width on 64-bit systems
 #include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -32,12 +31,12 @@ static size_t dump_range(FILE *f, uint8_t *a, size_t n) {
 }
 // 一個範圍裡可讀的 VM 區段逐一寫出 | write each readable VM region within a range
 static size_t dump_regions(FILE *f, uint8_t *lo, uint8_t *hi) {
-    size_t total = 0; mach_vm_address_t at = (mach_vm_address_t)(uintptr_t)lo;
-    while (at < (mach_vm_address_t)(uintptr_t)hi) {
-        mach_vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj;
-        if (mach_vm_region(mach_task_self(), &at, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) break;
-        if (at >= (mach_vm_address_t)(uintptr_t)hi) break;
-        mach_vm_address_t a0 = at, a1 = at + sz; if (a1 > (mach_vm_address_t)(uintptr_t)hi) a1 = (mach_vm_address_t)(uintptr_t)hi;
+    size_t total = 0; vm_address_t at = (vm_address_t)(uintptr_t)lo;
+    while (at < (vm_address_t)(uintptr_t)hi) {
+        vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj;
+        if (vm_region_64(mach_task_self(), &at, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &obj) != KERN_SUCCESS) break;
+        if (at >= (vm_address_t)(uintptr_t)hi) break;
+        vm_address_t a0 = at, a1 = at + sz; if (a1 > (vm_address_t)(uintptr_t)hi) a1 = (vm_address_t)(uintptr_t)hi;
         if (info.protection & VM_PROT_READ) total += dump_range(f, (uint8_t *)(uintptr_t)a0, (size_t)(a1 - a0));
         at += sz;
     }

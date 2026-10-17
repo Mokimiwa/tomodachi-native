@@ -1428,10 +1428,15 @@ static void tex_zero_fill(id<MTLTexture> mt) {
 // When a newly created non-packaged texture sits in a CPU-visible pool whose memory already holds data, that data becomes the initial content instead of zeros. The Switch GPU reads pool memory directly, so a game can write block-linear data with the CPU itself, without WriteTexels.
 // Tomodachi Life's atmospheric scattering table does this (256x32x16 RGBA16F 3D, pool CPU_CACHED|GPU_CACHED, texture flags 0): it used to become an all-zero GPU-only texture, the sky scattering came out 0,
 // and at noon the sky and ambient light were black (black ground, washed-out sea) while in the evening only other lights remained (a green cast, a sea that is not blue). The GPU never writes results back to guest memory, so non-zero data in the pool can only come from the CPU
+#if TARGET_OS_OSX   // 深度 / 模板格式段的最後一個：X24_Stencil8 只有 macOS 有，iOS 是 X32_Stencil8 | the last of the depth / stencil format run: X24_Stencil8 exists only on macOS, on iOS it is X32_Stencil8
+#define TEX_SEED_LAST_DS MTLPixelFormatX24_Stencil8
+#else
+#define TEX_SEED_LAST_DS MTLPixelFormatX32_Stencil8
+#endif
 static int tex_seed(const tex_t *t, id<MTLTexture> mt) {
     if (!t->mem || !t->pool || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) || t->L.size < 8) return 0;
     if (!atomic_load(&g_sub_thread_set) || !on_sub_thread()) return 0;   // 上傳批只屬於提交線程 | the upload batch belongs to the submit thread only
-    if (mt.sampleCount > 1 || (mt.pixelFormat >= MTLPixelFormatDepth16Unorm && mt.pixelFormat <= MTLPixelFormatX24_Stencil8)) return 0;   // 多重採樣、深度 / 模板拷不進去 | multisample and depth / stencil cannot be copied into
+    if (mt.sampleCount > 1 || (mt.pixelFormat >= MTLPixelFormatDepth16Unorm && mt.pixelFormat <= TEX_SEED_LAST_DS)) return 0;   // 多重採樣、深度 / 模板拷不進去 | multisample and depth / stencil cannot be copied into
     const uint64_t *w = (const uint64_t *)t->mem; size_t n = t->L.size / 8, i = 0;
     while (i < n && !w[i]) i++;
     if (i == n) return 0;
