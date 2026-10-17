@@ -33,8 +33,8 @@ typedef struct {
     size_t size;
     uint64_t text_end, ro_off, data_off, patch_off, key_page_off, key_page_size;   // 來自改寫器 fixups 頭 | From the rewriter fixups header
     char build_id[33];         // NSO 構建號前 16 字節（十六進制）；舊產物沒有則為空 | First 16 bytes of the NSO build ID (hex); empty for older build outputs
-    unsigned key_idx[9];
-    int has_resf;              // 產物有 KRESF 參數位（舊產物沒有） | the build output has the KRESF parameter slot (older ones do not)
+    unsigned key_idx[10];
+    int has_resf, has_band;    // 產物有 KRESF / KBAND 參數位（舊產物沒有） | the build output has the KRESF / KBAND parameter slots (older ones do not)
     const Elf64_Dyn *dyn;
     const Elf64_Sym *symtab;
     const char *strtab;
@@ -52,7 +52,7 @@ static inline const char *dm_main_build(void) { for (int i = 0; i < g_nmod; i++)
 // 四個線程本地槽：K18 = Switch 的 x18、KTLS = tpidr_el0、KTLR = tpidrro_el0（ThreadLocalRegion）、KGATE = 宿主門入口；實際鍵號由裝載器寫入鍵頁
 // Four thread-local slots: K18 = the Switch's x18, KTLS = tpidr_el0, KTLR = tpidrro_el0 (ThreadLocalRegion), KGATE = host gate entry; the actual key numbers are written into the key page by the loader
 extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
-extern pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui, g_keyresf;
+extern pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui, g_keyresf, g_keyband;
 
 void load_modules(const char *dir, const char **names, int n);
 int dm_option_known(const char *name);   // 這個遊戲的 options.tsv 裡有沒有這個可選剪口（只在 Mac 裝載路徑上記；iOS 恆 0） | whether this game's options.tsv lists the optional cut (recorded only on the Mac load path; always 0 on iOS)

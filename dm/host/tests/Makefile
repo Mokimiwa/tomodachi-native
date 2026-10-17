@@ -46,7 +46,7 @@ run: $(B)/t_textbox $(B)/t_padmap $(B)/t_bind $(B)/t_gesture $(B)/t_touch $(B)/t
 	$(PY) oe_notify.py $(B)/main.orig.bin
 $(B)/t_i18n: t_i18n.c ../dm_i18n.c ../dm_i18n.h ../dm_i18n_tab.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_i18n.c ../dm_i18n.c
-$(B)/t_aspect: t_aspect.c ../dm_aspect.c ../dm_aspect.h | $(B)
+$(B)/t_aspect: t_aspect.c ../dm_aspect.c ../dm_aspect.h ../dm_uiscreen.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_aspect.c ../dm_aspect.c
 $(B)/t_hud_dead: t_hud_dead.c ../dm_hud.h | $(B)
 	clang -O1 -Wall -Werror -I.. -o $@ t_hud_dead.c

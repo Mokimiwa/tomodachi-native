@@ -3,6 +3,14 @@
 #include "dm_aspect.h"
 #include <math.h>
 #include <stdio.h>
+// 界面帶縮放 dm_game_band（dm_uiscreen.h）：只看檔案有沒有界面著色器清單，測試裡當有；輸出尺寸由下面的樁給
+// UI band scale dm_game_band (dm_uiscreen.h): it only checks whether the profile has a UI shader list, which the test pretends it has; the stub below gives the output size
+#define DM_GAME_UI_VS_N 1
+#include "dm_uiscreen.h"
+static uint64_t g_res;
+uint64_t dm_game_res(int docked) { (void)docked; return g_res; }
+static float band_x(uint64_t k) { uint32_t a = (uint32_t)k; float f; memcpy(&f, &a, 4); return f; }
+static float band_y(uint64_t k) { uint32_t a = (uint32_t)(k >> 32); float f; memcpy(&f, &a, 4); return f; }
 
 static int checks, fails;
 #define CHECK(c, s) do { checks++; int ok_ = !!(c); fails += !ok_; printf("%s %s\n", ok_ ? "✓" : "✗", s); } while (0)
@@ -48,6 +56,17 @@ int main(void) {
     CHECK(W(r) == 1560 && H(r) == 720, "掌機 19.5:9 → 1560x720 | handheld 19.5:9 → 1560x720");
     r = dm_aspect_res(1280, 720, wide, tall, 3.0);
     CHECK(W(r) == 1720, "掌機上限按同一比例 → 1720 | handheld cap at the same ratio → 1720");
+    g_res = (uint64_t)1080 << 32 | 1920;
+    CHECK(dm_game_band() == 0, "界面帶：16:9 輸出 → 0（不縮放） | UI band: 16:9 output → 0 (no scale)");
+    g_res = (uint64_t)1080 << 32 | 2580;
+    uint64_t k = dm_game_band();
+    CHECK(fabs(band_x(k) - 2580.0 / 1920) < 1e-6 && band_y(k) == 1, "界面帶：2580x1080 → 橫 1.34375、縱 1 | UI band: 2580x1080 → x 1.34375, y 1");
+    g_res = (uint64_t)1350 << 32 | 1920;
+    k = dm_game_band();
+    CHECK(band_x(k) == 1 && fabs(band_y(k) - 1350.0 / 1080) < 1e-6, "界面帶：1920x1350 → 橫 1、縱 1.25 | UI band: 1920x1350 → x 1, y 1.25");
+    setenv("DM_UI_BAND", "0", 1);
+    CHECK(dm_game_band() == 0, "界面帶：DM_UI_BAND=0 關掉 → 0 | UI band: turned off by DM_UI_BAND=0 → 0");
+    unsetenv("DM_UI_BAND");
     printf("%d / %d 通過 | passed\n", checks - fails, checks);
     return fails != 0;
 }

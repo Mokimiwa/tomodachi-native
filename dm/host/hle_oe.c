@@ -265,6 +265,7 @@ HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "系統通知隊列；前�
     // writing only when 31 is taken is not enough: when 31 is queued behind another notification (e.g. focus 15), the parameter bits have already been read after fetching 15 (iOS app: the front end did not switch to 16:9, in the Mac host run 31 happened to be queued first).
     if (ok) for (int i = 0; i < 2; i++) if (g_keyres[i]) pthread_setspecific(g_keyres[i], (void *)dm_game_res(i));
     if (ok && g_keyresf) pthread_setspecific(g_keyresf, (void *)dm_game_resf());
+    if (ok && g_keyband) pthread_setspecific(g_keyband, (void *)dm_game_band());
     if (ok && *msg == MSG_PERFMODE) dm_uiscreen_res_reread();
     if (ok) LOG("oe 通知被遊戲取走：%u", *msg);   // 狀態變化很少，逐條打不刷屏 | state changes are rare, printing each one does not flood the log
     return ok;

@@ -281,8 +281,8 @@ for name, off, ob, nb, why in options:   # 可選剪口只核不寫 | optional c
     assert len(o) == len(n) and IMG[off:off + len(o)] == o, f'可選剪口 {name} 原字節不符 {off:#x}：{bytes(IMG[off:off + len(o)]).hex()}'
 # 鍵頁下標固定；鍵頁內容由裝載器寫入“實際鍵號 × 8”。
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
-KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504, 'KRESF': 503}   # KRES*：分辨率參數位；KASPECT：畫面寬高比上限；KRESF：主機模式輸出寬高的浮點（見 PARAMS） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap; KRESF: the docked output width and height as floats (see PARAMS)
-KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI', 'KRESF'))}
+KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511, 'KRES0': 506, 'KRES1': 507, 'KASPECT': 505, 'KASPECTUI': 504, 'KRESF': 503, 'KBAND': 502}   # KRES*：分辨率參數位；KASPECT：畫面寬高比上限；KRESF：主機模式輸出寬高的浮點（見 PARAMS）；KBAND：界面帶的縮放（見 MARKER） | KRES*: resolution parameter slots; KASPECT: picture aspect ratio cap; KRESF: the docked output width and height as floats (see PARAMS); KBAND: the UI band's scale (see MARKER)
+KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE', 'KRES0', 'KRES1', 'KASPECT', 'KASPECTUI', 'KRESF', 'KBAND'))}
 
 md = Cs(CS_ARCH_ARM64, CS_MODE_ARM); md.detail = True
 patch = bytearray(); fix = []; gates = []; stats = {}
@@ -1034,6 +1034,39 @@ if BUILD_ID in ASPECT:
     put_branch(off, start); stat('aspect')
     cuts.append((off, struct.pack('<I', word).hex(), struct.pack('<I', B(off, start)).hex(),
                  '投影構造的寬高比：16:9 換成 KRESF 寬 / 高（其他比例不動）；主相機在比 16:9 高的輸出上 fovy 乘 (16/9) ÷ 比例（Hor+）', '僅宿主'))
+
+# ---- 世界點 → 界面位置（僅宿主）：{NSO 構建號: [(偏移, 原指令字, 投影寄存器)]}。0x352670(相機坐標, 投影, 半屏尺寸) 用 3D 投影矩陣算出歸一化坐標，
+# 乘半屏尺寸得界面坐標（Mii 頭上「A 對話」這類提示；調用方：房間的提示 0x35087c、通用的世界點 → 界面 0x2172190）。界面畫在置中 16:9 帶裡時（回放 ui_band），
+# 投影已按輸出比例放寬 / 加高，這個坐標就要再乘帶的縮放（寬：x × 寬 / 帶寬；高：y × 高 / 帶高），提示才落在物體上。
+# 跳板掛在調用方用結果的那一條：投影的寬高比 = KRESF 寬 / 高（就是被換過的投影）且 KBAND 不為 0（界面帶開著）時，s0 乘 KBAND 低 32 位、s1 乘高 32 位；
+# 只用 x16 / x17 與 s3–s5（調用之後都是死的）。界面帶關著或 16:9 時 KBAND = 0，結果與原指令相同 ----
+# ---- World point → UI position (host only): {NSO build ID: [(offset, original instruction word, projection register)]}. 0x352670(camera position, projection, half screen size) computes normalized coordinates with the 3D projection matrix
+# and multiplies by the half screen size to get UI coordinates (markers such as "A 對話" over a Mii; callers: the room marker 0x35087c and the generic world point → UI helper 0x2172190). When the UI is drawn in a centred 16:9 band (replay ui_band),
+# the projection has already been widened / heightened for the output, so these coordinates need the band's scale too (wide: x × width / band width; tall: y × height / band height) for the marker to sit on the object.
+# The trampoline sits on the instruction where the caller uses the result: when the projection's aspect = KRESF width / height (a replaced projection) and KBAND is not 0 (UI band on), s0 is multiplied by the low 32 bits of KBAND and s1 by the high 32 bits;
+# it uses only x16 / x17 and s3–s5 (all dead after the call). With the UI band off or a 16:9 output KBAND = 0 and the result equals the original instruction ----
+MARKER = {'56bf85bd535413464cb75bb6c2683b67': [(0x350fac, 0x2d2f07a0, 21), (0x21721e8, 0xa9434ff4, 20)]}
+for off, word, preg in MARKER.get(BUILD_ID, []):
+    assert struct.unpack_from('<I', IMG, off)[0] == word, f'世界點 → 界面原指令不符 {off:#x}'
+    assert off not in kinds and not any(seg[0].address <= off < seg[-1].address + 4 for seg in windows), f'世界點 → 界面與改寫點衝突 {off:#x}'
+    start = here(); skips = []
+    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'KRESF'); emit(LDRX(16, 16))
+    skips.append(len(patch)); emit(0xB4000010)          # cbz x16, 原指令 | cbz x16, original
+    emit(0x1E270203); emit(0xD360FE10); emit(0x1E270204); emit(0x1E241863)   # fmov s3, w16 ; lsr x16, x16, #32 ; fmov s4, w16 ; fdiv s3, s3, s4（輸出比例 | output ratio）
+    emit(0xBD40B004 | (preg << 5))                       # ldr s4, [xP, #0xb0]（投影的比例 | the projection's aspect）
+    emit(0x1E242060)                                     # fcmp s3, s4
+    skips.append(len(patch)); emit(0x54000001)          # b.ne 原指令 | b.ne original
+    emit(MRS_TPIDRRO(16)); emit_slot_addr(16, 17, 'KBAND'); emit(LDRX(16, 16))
+    skips.append(len(patch)); emit(0xB4000010)          # cbz x16, 原指令 | cbz x16, original
+    emit(0x1E270204); emit(0xD360FE10); emit(0x1E270205)   # fmov s4, w16（kx）; lsr x16, x16, #32 ; fmov s5, w16（ky）
+    emit(0x1E240800); emit(0x1E250821)                   # fmul s0, s0, s4 ; fmul s1, s1, s5
+    orig = here(); emit(word); emit(B(here(), off + 4))
+    for k in skips:
+        w_ = struct.unpack_from('<I', patch, k)[0]
+        struct.pack_into('<I', patch, k, w_ | (((orig - (PATCH_OFF + k)) >> 2) & 0x7FFFF) << 5)
+    put_branch(off, start); stat('marker')
+    cuts.append((off, struct.pack('<I', word).hex(), struct.pack('<I', B(off, start)).hex(),
+                 '世界點 → 界面位置：投影是換過比例的那個且界面帶開著時，結果乘界面帶縮放 KBAND', '僅宿主'))
 
 # 既有三塊原生規則跳板均只使用後繼覆蓋的死臨時w8，不改w0/stat返回、sp或NZCV。
 # 6c6290位於原mode3門後；前方Blaze/引用計數與數據失效6c62dc分支、後方狀態更新不動。
