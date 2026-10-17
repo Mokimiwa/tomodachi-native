@@ -8,7 +8,7 @@
 #   已登記剪口（CUTS，按 NSO 構建號限定）：改寫前逐條斷言原字節，不符即中止；結果列在 <名>.cuts.tsv
 #   已登記觀測門（OBS，按構建號限定）：入口一條指令換成「進宿主觀測回調 → 執行原指令 → 跳回」，診斷零運行時改代碼；列在 <名>.obs.tsv
 # 鍵頁只在數據段末尾保存“實際鍵號 × 8”，補丁代碼通過鍵頁間接取線程槽：裝載器可使用任意鍵號。
-# 輸出：<名>.patched.bin（鍵頁與補丁區接在映像後 PATCH_OFF）、<名>.fixups.tsv（佈局與鍵頁下標表頭）、<名>.gates.tsv、<名>.sites.tsv、<名>.cuts.tsv、<名>.obs.tsv
+# 輸出：<名>.patched.bin（鍵頁與補丁區接在映像後 PATCH_OFF；接在後面會超過 112 MB 時補丁區在首址前，見 FAR）、<名>.fixups.tsv（佈局與鍵頁下標表頭）、<名>.gates.tsv、<名>.sites.tsv、<名>.cuts.tsv、<名>.obs.tsv
 # Generic NSO rewriter: Switch aarch64 module → an image that can execute natively on Apple systems.
 # Usage: patch_nso.py <NSO file> <output dir> <module name>
 # Rewrites (the Apple kernel modifies x18 and tpidr_el0; Horizon's thread area, svc and timers have no counterpart on Apple):
@@ -19,7 +19,7 @@
 #   Registered cuts (CUTS, restricted by NSO build ID): before rewriting, the original bytes are asserted one by one and any mismatch aborts; results are listed in <name>.cuts.tsv
 #   Registered observation gates (OBS, restricted by build ID): one instruction at the entry is replaced with "enter the host observation callback → execute the original instruction → jump back", so diagnostics modify zero code at runtime; listed in <name>.obs.tsv
 # The key page only stores "actual key number × 8" at the end of the data segment, and patch code fetches thread slots indirectly through the key page: the loader may use any key number.
-# Output: <name>.patched.bin (key page and patch area appended after the image at PATCH_OFF), <name>.fixups.tsv (layout and key page index header), <name>.gates.tsv, <name>.sites.tsv, <name>.cuts.tsv, <name>.obs.tsv
+# Output: <name>.patched.bin (key page and patch area appended after the image at PATCH_OFF; when that would start beyond 112 MB the patch area sits before the base, see FAR), <name>.fixups.tsv (layout and key page index header), <name>.gates.tsv, <name>.sites.tsv, <name>.cuts.tsv, <name>.obs.tsv
 import struct, re, sys, os
 from itertools import combinations
 import lz4.block
@@ -32,16 +32,29 @@ flags = struct.unpack_from('<I', d, 0xc)[0]
 segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
 bss = struct.unpack_from('<I', d, 0x3c)[0]
 csz = struct.unpack_from('<III', d, 0x60)
-IMG = bytearray(segs[2][1] + segs[2][2] + bss)
+# 補丁區與代碼之間每一跳都是 B（±128 MB）。補丁區接在映像（含 bss）後面時若起點超過 112 MB（給補丁區留 16 MB）就夠不著代碼：銀河戰士 生存恐懼的 main 有約 1.8 GB bss（引擎的靜態堆）；Engage 的 main 起點約 103 MB，照舊接在後面。
+# 這時補丁區放在模塊首址之前 FRONT 處（PATCH_OFF 為負），產物文件只存 text + ro + data（FILE_IMAGE_LEN）再接補丁區；bss 與鍵頁由裝載器給零頁（IMAGE_SIZE 為整個映像）。
+# 鍵頁仍在 bss 之後（補丁區經 ADRP 取它，±4 GB 夠得著）。沒超的模塊產物與以前逐字節相同（上游 a9c56fd）
+# Every jump between the patch area and the code is a B (±128 MB). A patch area appended after the image (with bss) cannot reach the code when it would start beyond 112 MB (leaving 16 MB for the patch area): Metroid Dread's main has about 1.8 GB of bss (the engine's static heap); Engage's main starts its patch area at about 103 MB and keeps it after the image.
+# The patch area then sits FRONT bytes before the module base (PATCH_OFF is negative), and the output file holds only text + ro + data (FILE_IMAGE_LEN) followed by the patch area; the loader supplies zero pages for bss and the key page (IMAGE_SIZE is the whole image).
+# The key page stays after bss (the patch area reaches it through ADRP, ±4 GB). Modules below the limit produce output byte-identical to before (upstream a9c56fd)
+NEAR_PATCH_OFF = ((((segs[2][1] + segs[2][2] + bss + 0x3FFF) & ~0x3FFF) + 0x4000 + 0xFFFF) & ~0xFFFF)   # 補丁區接在後面時的起點（同下面 else 分支） | where an appended patch area would start (as in the else branch below)
+FAR, FRONT = NEAR_PATCH_OFF > 0x7000000, 0x2000000
+IMG = bytearray(segs[2][1] + segs[2][2] + (0 if FAR else bss))
 for i, (fo, mo, sz) in enumerate(segs):
     raw = d[fo:fo + csz[i]]
     if flags >> i & 1: raw = lz4.block.decompress(raw, uncompressed_size=sz)
     IMG[mo:mo + sz] = raw
 TEXT_END = segs[0][2]
 RO_OFF, DATA_OFF = segs[1][1], segs[2][1]
-KEY_PAGE_OFF = (len(IMG) + 0x3FFF) & ~0x3FFF
-IMG.extend(bytes(0x4000))
-PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
+if FAR:
+    FILE_IMAGE_LEN = (len(IMG) + 0x3FFF) & ~0x3FFF
+    KEY_PAGE_OFF = (len(IMG) + bss + 0x3FFF) & ~0x3FFF
+    IMAGE_SIZE, PATCH_OFF = KEY_PAGE_OFF + 0x4000, -FRONT
+else:
+    KEY_PAGE_OFF = (len(IMG) + 0x3FFF) & ~0x3FFF
+    IMG.extend(bytes(0x4000))
+    PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
 
 # ---- 已登記剪口：{NSO 構建號: [(偏移, 原字節, 新字節, 理由)]} ----
 # 聯網剪口（排除範圍：戰網 / 聯機）：取自社區離線修復（LFS Mod Offline Fix for v2228224，與官方 94012 main 只差這 7 個字）。
@@ -817,9 +830,12 @@ if RULE_RUN and PRIVATE_GATES:
 for off, oid, ow, why in obs:
     w = struct.unpack_from('<I', IMG, off)[0]
     assert f'{w:08x}' == ow, f'觀測門原指令不符 {off:#x}：{w:08x}'
-    # 只許函數入口：dm_gate 只回寫 x0–x8 / x30，宿主 C 代碼可能改 x9–x17；入口處這些按 AAPCS64 不承載值（參數只在 x0–x7 / x8）
-    # Function entries only: dm_gate writes back only x0–x8 / x30, and host C code may modify x9–x17; at entry these carry no values under AAPCS64 (arguments are only in x0–x7 / x8)
-    assert off in set(starts) or (oid == 6 and off == 0x43ecc8), f'private obs point not approved {off:#x}'
+    # 只許函數入口或緊跟 bl 的那條：dm_gate 只回寫 x0–x8 / x30，宿主 C 代碼可能改 x9–x17；入口處這些按 AAPCS64 不承載值（參數只在 x0–x7 / x8），
+    # 剛從調用返回時被調函數本就可以改壞它們（x16 / x17 是跳板寄存器）（上游 a9c56fd）
+    # Function entries, or the instruction right after a bl, only: dm_gate writes back only x0–x8 / x30, and host C code may modify x9–x17; at entry these carry no values under AAPCS64 (arguments are only in x0–x7 / x8),
+    # and right after a call returns the callee was free to clobber them anyway (x16 / x17 are the veneer registers) (upstream a9c56fd)
+    after_bl = off >= 4 and struct.unpack_from('<I', IMG, off - 4)[0] >> 26 == 0x25
+    assert off in set(starts) or after_bl or (oid == 6 and off == 0x43ecc8), f'private obs point not approved {off:#x}'
     assert off < TEXT_END and off not in kinds and not any(lo <= off < hi for wseg in windows for lo, hi in [(wseg[0].address, wseg[-1].address + 4)]), f'觀測門與改寫點衝突 {off:#x}'
     put_branch(off, site_obs(off, oid, w)); stat('obs')
 
@@ -1008,7 +1024,11 @@ if RULE_RUN:
 
 os.makedirs(outdir, exist_ok=True)
 P = lambda ext: os.path.join(outdir, f'{NAME}.{ext}')
-open(P('patched.bin'), 'wb').write(IMG + bytearray(PATCH_OFF - len(IMG)) + patch)
+if FAR:   # 補丁區在首址前：文件 = text + ro + data（補到 16K）+ 補丁區 | patch area before the base: file = text + ro + data (padded to 16K) + patch area
+    assert len(patch) <= FRONT - 0x4000, f'補丁區 {len(patch):#x} 字節放不進首址前的 {FRONT:#x} | patch area of {len(patch):#x} bytes does not fit in the {FRONT:#x} before the base'
+    open(P('patched.bin'), 'wb').write(IMG + bytearray(FILE_IMAGE_LEN - len(IMG)) + patch)
+else:
+    open(P('patched.bin'), 'wb').write(IMG + bytearray(PATCH_OFF - len(IMG)) + patch)
 import hashlib
 with open(os.path.join(outdir, 'build_src.sha256'), 'w') as f:
     f.write(hashlib.sha256(open(os.path.abspath(__file__), 'rb').read()).hexdigest() + '  patch_nso.py\n')
@@ -1024,6 +1044,7 @@ elif os.path.exists(P('rules.tsv')):
     os.unlink(P('rules.tsv'))  # 重出native時清本模塊舊規則登記，不讓舊manifest混入原資源域 | When rebuilding native, clear this module's old rule registration so the old manifest does not leak into the original-resource domain
 with open(P('fixups.tsv'), 'w') as f:
     f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
+    if FAR: f.write(f'# IMAGE_SIZE\t{IMAGE_SIZE:#x}\n# FILE_IMAGE_LEN\t{FILE_IMAGE_LEN:#x}\n')   # 補丁區在首址前（PATCH_OFF 為負）：整個映像大小、文件裡映像部分的長度 | patch area before the base (negative PATCH_OFF): whole image size, length of the image part of the file
     for k in KEY_INDEX: f.write(f'# KEY_{k}_IDX\t{KEY_INDEX[k]}\n')
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')   # 宿主據此認構建：寫死地址的功能只在它們所屬的構建上開 | the host identifies the build by it: features with hard-coded addresses only run on the build they belong to
 with open(P('gates.tsv'), 'w') as f:

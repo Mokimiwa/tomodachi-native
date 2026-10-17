@@ -70,6 +70,13 @@ static void mem_init(void) {
 // 報給遊戲的「已用」= 堆 + 這個固定量（代碼映像、棧等）；SetHeapSize 的池上限按同一個量判，兩邊一致
 // The "used" figure reported to the game = heap + this fixed amount (code images, stacks and so on); SetHeapSize's pool limit is judged by the same amount, so both sides agree
 #define USED_BASE 0x4000000ull
+// 巨型 bss（補丁區在首址前的模塊，patch_nso.py FAR）：映像裡文件部分之外的字節。USED_BASE 涵蓋普通模塊的代碼與數據（馬力歐兩模塊共約 74 MB，
+// 它開的堆 = 池 − 64 MB − 1.75 GB 虛擬地址內存 − 1 MB = 0x5be00000，與真機一致）；銀河戰士 生存恐懼 main 的 bss 約 1.8 GB 是引擎的靜態堆，Switch 把它算作已用，
+// 不加上它遊戲就按池 − 64 MB 要 3.15 GB 堆（上游 a9c56fd）。已用與 SetHeapSize 的池上限都加它，兩邊仍一致
+// Giant bss (modules with the patch area before the base, patch_nso.py FAR): the image bytes beyond the file part. USED_BASE covers ordinary modules' code and data (Mario's two modules are about 74 MB together,
+// and the heap it opens = pool − 64 MB − 1.75 GB virtual address memory − 1 MB = 0x5be00000, as on hardware); Metroid Dread's main has about 1.8 GB of bss, the engine's static heap, which the Switch counts as used;
+// without it the game asks for pool − 64 MB = 3.15 GB of heap (upstream a9c56fd). Both the used figure and SetHeapSize's pool limit add it, so the two still agree
+static size_t big_bss_bytes(void) { size_t n = 0; for (int i = 0; i < g_nmod; i++) if (g_mod[i].patch_off < 0) n += g_mod[i].size - g_mod[i].file_image_len; return n; }
 
 // 內存賬（memstat.m）用：客體地址空間整塊範圍（未初始化時 base = NULL）
 // For memory accounting (memstat.m): the range of the whole guest address space block (base = NULL when not initialized)
@@ -130,7 +137,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // Exceeds the application memory pool: ResultLimitReached. At startup the game retries in 2 MB decrements until it fits (main+0x1b66184).
         // Judged by the same books reported to the game (USED_BASE, see I_UsedMem): Tomodachi Life's nninitStartup (main+0x854744) sets the heap to total − used without retrying, and its 98 MB of images exceed 64 MB, so judging by the images rejected it;
         // AllocateMemoryBlock then failed and the game read a pointer from the stack that was never written (CRASH sdk+0x582b00). Mario's images are under 64 MB, so its first request passes either way
-        if (size + USED_BASE > APP_POOL) { regs[0] = 0x10801; return 0; }
+        if (size + USED_BASE + big_bss_bytes() > APP_POOL) { regs[0] = 0x10801; return 0; }
         int rc = 0;
         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
         else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
@@ -190,9 +197,12 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
             // The SDK's C++ exception unwinding (nn::ro::detail::GetExceptionInfo) walks back from the PC over "Code+RX" regions to find the module start, forward over Code then CodeData to find its end, then reads MOD0 at the module start for .eh_frame_hdr.
             // Previously "the 4 KiB page around it, Code+RX" was reported: the backward walk ran on into other memory, found no MOD0 and aborted (Engage's IL2CPP throws a C++ exception for every managed exception).
             // The rewriter's patch area is reported as CodeData+RX: modules sit back to back in the host, and an executable patch area reported as Code+RX would merge the previous module into the backward walk
+            // 補丁區在首址前的模塊（patch_off < 0）：補丁區單報 CodeData+RX，數據與 bss 一直到映像尾
+            // Modules with the patch area before the base (patch_off < 0): the patch area is reported alone as CodeData+RX, and data and bss run to the end of the image
             module_t *mm = module_of(a); uint64_t off = (uint64_t)(a - mm->base), mb = (uint64_t)mm->base;
-            uint64_t ro = mm->ro_off ? mm->ro_off : mm->text_end, da = mm->data_off ? mm->data_off : ro, pa = mm->patch_off ? mm->patch_off : mm->size;
-            if (off < ro)      { base = mb;      size = ro;            state = 3/*Code*/;     perm = 5; }
+            uint64_t ro = mm->ro_off ? mm->ro_off : mm->text_end, da = mm->data_off ? mm->data_off : ro, pa = mm->patch_off > 0 ? (uint64_t)mm->patch_off : mm->size;
+            if (a < mm->base)  { base = mb + mm->patch_off; size = mm->patch_len; state = 4/*CodeData*/; perm = 5; }
+            else if (off < ro) { base = mb;      size = ro;            state = 3/*Code*/;     perm = 5; }
             else if (off < da) { base = mb + ro; size = da - ro;       state = 3/*Code*/;     perm = 1; }
             else if (off < pa) { base = mb + da; size = pa - da;       state = 4/*CodeData*/; perm = 3; }
             else               { base = mb + pa; size = mm->size - pa; state = 4/*CodeData*/; perm = 5; }
@@ -264,7 +274,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         case I_AslrAddr:  v = (uint64_t)g_as;    break;   case I_AslrSize:  v = RESERVE;     break;
         case I_StackAddr: v = (uint64_t)g_stack; break;   case I_StackSize: v = g_stack_cap; break;
         case I_TotalMem: case I_TotalNonSys: v = APP_POOL; break;
-        case I_UsedMem:  case I_UsedNonSys:  v = g_heap_cur + USED_BASE; break;
+        case I_UsedMem:  case I_UsedNonSys:  v = g_heap_cur + USED_BASE + big_bss_bytes(); break;
         case I_SysResTotal: v = 0x2000000; break; case I_SysResUsed: v = 0x400000; break;
         case I_DebuggerAttached: v = 0; break;
         case I_RandomEntropy: { uint64_t dm_entropy64(void); v = dm_entropy64(); break; }   // DM_DETCLOCK 開時為確定流（hle_os.c） | a deterministic stream when DM_DETCLOCK is on (hle_os.c)

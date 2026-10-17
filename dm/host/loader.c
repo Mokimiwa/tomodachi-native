@@ -107,9 +107,14 @@ void *guest_sym(const char *name) {
     for (int i = 0; i < g_nmod; i++) { void *p = module_sym(&g_mod[i], name); if (p) return p; }
     return NULL;
 }
+// 補丁區在首址前的模塊（patch_off < 0）也認補丁區裡的地址，與補丁區在映像後的模塊一致（崩潰報告、GC 暫停判斷「在客體代碼裡」）
+// For modules with the patch area before the base (patch_off < 0) addresses in the patch area count too, as for modules whose patch area follows the image (crash reports, the GC pause's "in guest code" test)
 module_t *module_of(const void *p) {
-    for (int i = 0; i < g_nmod; i++)
-        if ((const uint8_t *)p >= g_mod[i].base && (const uint8_t *)p < g_mod[i].base + g_mod[i].size) return &g_mod[i];
+    for (int i = 0; i < g_nmod; i++) {
+        const uint8_t *b = g_mod[i].base;
+        if ((const uint8_t *)p >= b && (const uint8_t *)p < b + g_mod[i].size) return &g_mod[i];
+        if (g_mod[i].patch_off < 0 && (const uint8_t *)p >= b + g_mod[i].patch_off && (const uint8_t *)p < b + g_mod[i].patch_off + g_mod[i].patch_len) return &g_mod[i];
+    }
     return NULL;
 }
 
@@ -159,7 +164,9 @@ static void read_layout(module_t *m, const char *dir) {
     char line[256], key[32]; unsigned long v; unsigned seen = 0;
     while (fgets(line, sizeof line, f)) {
         if (sscanf(line, "# %31s %lx", key, &v) != 2) die("%s: 產物是舊改寫器出的，換成當前代號（dm/PRODUCT）的產物", path);
-        if (!strcmp(key, "PATCH_OFF")) m->patch_off = v;
+        if (!strcmp(key, "PATCH_OFF")) m->patch_off = strtoll(line + 2 + strlen(key), NULL, 16);   // 可為負（補丁區在首址前） | may be negative (patch area before the base)
+        else if (!strcmp(key, "IMAGE_SIZE")) m->image_size = v;
+        else if (!strcmp(key, "FILE_IMAGE_LEN")) m->file_image_len = v;
         else if (!strcmp(key, "KEY_PAGE_OFF")) m->key_page_off = v;
         else if (!strcmp(key, "KEY_PAGE_SIZE")) m->key_page_size = v;
         else if (!strcmp(key, "TEXT_END")) m->text_end = v;
@@ -176,6 +183,8 @@ static void read_layout(module_t *m, const char *dir) {
     fclose(f);
     if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != 0xff)
         die("%s: 產物是舊改寫器出的，換成當前代號（dm/PRODUCT）的產物", path);
+    if (m->patch_off < 0 && (!m->image_size || !m->file_image_len || m->file_image_len % 0x4000 || m->patch_off % 0x4000 || m->key_page_off + m->key_page_size > m->image_size))
+        die("%s: 補丁區在首址前，但 IMAGE_SIZE / FILE_IMAGE_LEN 缺失或不對 | patch area before the base, but IMAGE_SIZE / FILE_IMAGE_LEN missing or wrong", path);
 }
 
 static void install_key_page(module_t *m) {
@@ -366,11 +375,17 @@ static void map_image(module_t *m, const char *dir) {
     unsigned long z0, zw, z1;
     const uint8_t *x0 = getsectiondata(IMAGE_MH, "__TEXT", sx0, &z0), *w = getsectiondata(IMAGE_MH, dm, "__img", &zw), *x1 = getsectiondata(IMAGE_MH, "__TEXT", sx1, &z1);
     if (!x0 || !w || !x1) die("內嵌節 %s / %s / %s 缺失", sx0, dm, sx1);
-    if (z0 + zw != m->patch_off || (z0 & 0x3FFF) || (zw & 0x3FFF) || (z1 & 0x3FFF) || ((uintptr_t)x0 & 0x3FFF) || ((uintptr_t)w & 0x3FFF) || ((uintptr_t)x1 & 0x3FFF))
+    // 補丁區在首址前（patch_off < 0）：W 只到 data 尾（FILE_IMAGE_LEN），bss 與鍵頁是 vm_allocate 給的零頁，不進可執行文件
+    // Patch area before the base (patch_off < 0): W ends at the end of data (FILE_IMAGE_LEN); bss and the key page are zero pages from vm_allocate and are not in the executable
+    int front = m->patch_off < 0;
+    if (z0 + zw != (front ? m->file_image_len : (uint64_t)m->patch_off) || (z0 & 0x3FFF) || (zw & 0x3FFF) || (z1 & 0x3FFF) || ((uintptr_t)x0 & 0x3FFF) || ((uintptr_t)w & 0x3FFF) || ((uintptr_t)x1 & 0x3FFF))
         die("%s 內嵌節佈局不符（x0 %#lx w %#lx x1 %#lx，PATCH_OFF %#llx）", m->name, z0, zw, z1, (unsigned long long)m->patch_off);
-    m->size = m->patch_off + z1;
+    m->size = front ? m->image_size : m->patch_off + z1;
+    uint64_t pre = front ? (uint64_t)-m->patch_off : 0;
+    if (front) m->patch_len = z1;
     vm_address_t base = 0;
-    if (vm_allocate(mach_task_self(), &base, m->size, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) die("%s 保留 %#zx 字節地址失敗", m->name, m->size);
+    if (vm_allocate(mach_task_self(), &base, pre + m->size, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) die("%s 保留 %#llx 字節地址失敗", m->name, (unsigned long long)(pre + m->size));
+    base += pre;
     remap_at(m, base, x0, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
     remap_at(m, base + z0, w, zw, TRUE, VM_PROT_READ | VM_PROT_WRITE);
     remap_at(m, base + m->patch_off, x1, z1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
@@ -423,6 +438,24 @@ static void apply_options(module_t *m, const char *dir) {
 static void map_image(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.patched.bin", dir, m->name);
     size_t sz; uint8_t *raw = slurp(path, &sz);
+    if (m->patch_off < 0) {
+        // 補丁區在首址前：文件 = 映像前段（text + ro + data）+ 補丁區；bss 與鍵頁是匿名零頁。補丁區尾到首址之間不映射（PROT_NONE）（上游 a9c56fd）
+        // Patch area before the base: file = the first part of the image (text + ro + data) + patch area; bss and the key page are anonymous zero pages. The gap from the patch area's end to the base is left inaccessible (PROT_NONE) (upstream a9c56fd)
+        uint64_t pre = (uint64_t)-m->patch_off, fl = m->file_image_len;
+        if (sz < fl) die("%s 比 FILE_IMAGE_LEN %#llx 短", path, (unsigned long long)fl);
+        m->size = m->image_size; m->patch_len = (sz - fl + 0x3FFF) & ~0x3FFFull;
+        if (m->patch_len > pre) die("%s 補丁區 %#llx 字節放不進首址前的 %#llx", path, (unsigned long long)m->patch_len, (unsigned long long)pre);
+        uint8_t *a = mmap(NULL, pre + m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (a == MAP_FAILED) die("%s mmap %#llx", m->name, (unsigned long long)(pre + m->size));
+        m->base = a + pre;
+        memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw); install_key_page(m);
+        apply_options(m, dir);   // 封頁之前 | before sealing
+        uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
+        if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+        if (mprotect(a, m->patch_len, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
+        if (pre > m->patch_len && mprotect(a + m->patch_len, pre - m->patch_len, PROT_NONE)) die("%s mprotect gap", m->name);
+        return;
+    }
     m->size = (sz + 0x3FFF) & ~0x3FFFull;
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);

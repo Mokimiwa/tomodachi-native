@@ -31,7 +31,9 @@ typedef struct {
     char name[16];
     uint8_t *base;             // 映像（含補丁區）在宿主地址空間的首址 | Start address of the image (including the patch area) in the host address space
     size_t size;
-    uint64_t text_end, ro_off, data_off, patch_off, key_page_off, key_page_size;   // 來自改寫器 fixups 頭 | From the rewriter fixups header
+    uint64_t text_end, ro_off, data_off, key_page_off, key_page_size;   // 來自改寫器 fixups 頭 | From the rewriter fixups header
+    int64_t patch_off;         // 補丁區相對首址；為負 = 補丁區在首址前（映像太大，見 patch_nso.py FAR），這時 size 不含它 | patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
+    uint64_t image_size, file_image_len, patch_len;   // 僅補丁區在首址前時：整個映像（含 bss 與鍵頁）、文件裡映像部分的長度、補丁區長 | only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     char build_id[33];         // NSO 構建號前 16 字節（十六進制）；舊產物沒有則為空 | First 16 bytes of the NSO build ID (hex); empty for older build outputs
     unsigned key_idx[8];
     const Elf64_Dyn *dyn;
