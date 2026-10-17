@@ -26,6 +26,9 @@
 // Every take-over in this file runs on the big host stack (hle_bigstack.c): path buffers are sized by PATH_MAX and one file open takes 6-7 KB of stack, while a game's save thread can have as little as 8 KB (Super Mario 3D World + Bowser's Fury, upstream 42a50ef)
 #undef HLE_FORCE
 #define HLE_FORCE HLE_FORCE_BIG
+// 弱定義的大棧入口（不換棧，直接跳到實現）：宿主裡由 hle_bigstack.c 的強定義蓋過；單測（t_fs、t_fs_case）直接 #include 本文件、不鏈 hle_bigstack.c，靠它鏈上
+// Weak big-stack entry (no stack switch, jumps straight to the implementation): in the host the strong definition in hle_bigstack.c wins; the unit tests (t_fs, t_fs_case) #include this file without hle_bigstack.c and link against this one
+__asm__(".text\n.p2align 2\n.globl _dm_bigstack_enter\n.private_extern _dm_bigstack_enter\n.weak_definition _dm_bigstack_enter\n_dm_bigstack_enter:\n    br x16\n");
 
 #define RES_PATH_NOT_FOUND 0x202u     // fs 模塊 2，描述 1 | fs module 2, description 1
 #define RES_PATH_EXISTS    0x402u      // fs 模塊 2，描述 2 | fs module 2, description 2
