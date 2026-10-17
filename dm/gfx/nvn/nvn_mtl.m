@@ -980,9 +980,13 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     d.width = t->d.width ? t->d.width : 1; d.height = t->d.height ? t->d.height : 1; d.depth = 1; d.arrayLength = 1;
     d.mipmapLevelCount = t->d.levels ? t->d.levels : 1;
     switch (t->d.target) {
-        case 0: d.textureType = MTLTextureType1D; d.height = 1; break;
+        // 一維 / 一維數組建成一行高的二維 / 二維數組：翻譯出的著色器從不聲明 texture1d（五個遊戲全庫 0 個），一律按二維採樣；Metal 一維貼圖綁到 texture2d 參數是類型不符、讀值未定義。
+        // 超級馬力歐 3D 世界 + 狂怒世界的材質著色器每幀大量採樣 64×1 R32F 一維查找表（Maxwell 上二維採樣一維貼圖就是讀那一行）（上游 42a50ef）
+        // 1D / 1D array are created as one-row 2D / 2D array textures: translated shaders never declare texture1d (0 in all five games' libraries) and always sample them as 2D; a Metal 1D texture bound to a texture2d argument is a type mismatch with undefined reads.
+        // Super Mario 3D World + Bowser's Fury's material shaders sample 64x1 R32F 1D lookup tables heavily every frame (on Maxwell a 2D sample of a 1D texture reads that one row) (upstream 42a50ef)
+        case 0: d.textureType = MTLTextureType2D; d.height = 1; break;
         case 2: d.textureType = MTLTextureType3D; d.depth = t->d.depth; break;
-        case 3: d.textureType = MTLTextureType1DArray; d.arrayLength = t->d.height; d.height = 1; break;
+        case 3: d.textureType = MTLTextureType2DArray; d.arrayLength = t->d.height; d.height = 1; break;
         case 4: d.textureType = MTLTextureType2DArray; d.arrayLength = t->d.depth; break;
         case 5: d.textureType = MTLTextureType2DMultisample; d.sampleCount = t->d.samples; d.mipmapLevelCount = 1; break;
         case 6: d.textureType = MTLTextureType2DMultisampleArray; d.sampleCount = t->d.samples; d.arrayLength = t->d.depth; d.mipmapLevelCount = 1; break;
@@ -2166,6 +2170,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         any = 1;
         pd.colorAttachments[i].loadAction = R.clear_c[i] ? MTLLoadActionClear : MTLLoadActionLoad;
         pd.colorAttachments[i].clearColor = R.cc[i];
+        if (R.clear_c[i]) PD("C %llu c%d 清成 %g,%g,%g,%g", g_stat_pass + 1, i, R.cc[i].red, R.cc[i].green, R.cc[i].blue, R.cc[i].alpha);
         // 診斷 DM_NVN_CLEAR_RT=寬x高：這個尺寸的顏色附件一律清成黑色再畫（看畫面上的東西是當幀畫的，還是前幾幀留下來的）
         // Diagnostic DM_NVN_CLEAR_RT=WxH: colour attachments of this size are always cleared to black before drawing (tells what is drawn this frame from what was left by earlier frames)
         { static int cw = -1, ch; if (cw < 0) { const char *e = getenv("DM_NVN_CLEAR_RT"); if (!e || sscanf(e, "%dx%d", &cw, &ch) != 2) cw = 0; else MLOG("DM_NVN_CLEAR_RT：%dx%d 的顏色附件一律先清黑（診斷）", cw, ch); }
@@ -2232,9 +2237,9 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         uint64_t b = att_bytes(c.texture, c.level); natt++; g_bw_store += b; if (c.loadAction == MTLLoadActionLoad) { g_bw_load += b; nload++; }
         if (g_pd_tw) passdump_arm((unsigned)c.texture.width, (unsigned)c.texture.height);
         if (R.rt.has_cview[i] && R.rt.cview[i].set_format) PD("V %llu c%d 視圖格式 %#x（基貼圖 NVN 格式 %#x）", g_stat_pass + 1, i, R.rt.cview[i].format, R.rt.color[i]->d.format);
-        PD("P %llu c%d ser=%llu fmt=%lu %lux%lu ms%lu lv%lu sl%lu %s", g_stat_pass + 1, i, R.rt.color[i]->serial, (unsigned long)c.texture.pixelFormat,
+        PD("P %llu c%d ser=%llu fmt=%lu %lux%lu ms%lu lv%lu sl%lu %s mtl=%p", g_stat_pass + 1, i, R.rt.color[i]->serial, (unsigned long)c.texture.pixelFormat,
            (unsigned long)c.texture.width, (unsigned long)c.texture.height, (unsigned long)c.texture.sampleCount, (unsigned long)c.level, (unsigned long)c.slice,
-           c.loadAction == MTLLoadActionClear ? "clear" : c.loadAction == MTLLoadActionDontCare ? "dontcare" : "load");
+           c.loadAction == MTLLoadActionClear ? "clear" : c.loadAction == MTLLoadActionDontCare ? "dontcare" : "load", (__bridge void *)(c.texture.parentTexture ? c.texture.parentTexture : c.texture));
     }
     {   // 深度與模板平面分開記（合一格式 5 字節 = 深度 4 + 模板 1；只掛一項時只記那一項） | Depth and stencil planes are counted separately (combined format 5 bytes = depth 4 + stencil 1; when only one is attached only that one is counted)
         id<MTLTexture> dt = pd.depthAttachment.texture, stt = pd.stencilAttachment.texture;
@@ -2691,8 +2696,8 @@ void mtl_reg_samp(int sid, const samp_par *sp) {
     pthread_mutex_unlock(&g_rmu);
 }
 static MTLTextureType ttype(int target, int fallback) {
-    switch (target) { case 0: return MTLTextureType1D; case 1: case 7: return MTLTextureType2D; case 2: return MTLTextureType3D;
-        case 3: return MTLTextureType1DArray; case 4: return MTLTextureType2DArray; case 5: return MTLTextureType2DMultisample;
+    switch (target) { case 0: return MTLTextureType2D; case 1: case 7: return MTLTextureType2D; case 2: return MTLTextureType3D;   // 一維按一行高的二維（見建貼圖處） | 1D as one-row 2D (see where textures are created)
+        case 3: return MTLTextureType2DArray; case 4: return MTLTextureType2DArray; case 5: return MTLTextureType2DMultisample;
         case 6: return MTLTextureType2DMultisampleArray; case 8: return MTLTextureTypeCube; case 9: return MTLTextureTypeCubeArray; }
     return (MTLTextureType)fallback;
 }
@@ -2710,13 +2715,15 @@ void mtl_set_tex_pool_n(int n) { g_tpool_n = n; }
 // Switch to a single-layer view of that type over the same storage (a type-only view needs no PixelFormatView and works on linear textures too), cached per texture ID; the view holds the original texture, so its pointer cannot be reused while it exists
 static uint64_t tex_type_fix(int tid, __unsafe_unretained id<MTLTexture> *t, MTLTextureType want) {   // 調用方持 g_rmu | Caller holds g_rmu
     MTLTextureType have = (*t).textureType;
+    // 二維數組（至少 6 層）按立方 / 立方數組讀：遊戲把二維數組貼圖綁到聲明立方的採樣上（上游 42a50ef 的 tex_fit 也收這兩種） | a 2D array (6 layers or more) read as a cube / cube array: a game binds a 2D array texture where a cube is declared (upstream 42a50ef's tex_fit takes these two as well)
     int ok = (have == MTLTextureType2D && want == MTLTextureType2DArray) || (have == MTLTextureType2DArray && want == MTLTextureType2D) ||
-             (have == MTLTextureTypeCube && want == MTLTextureTypeCubeArray) || (have == MTLTextureTypeCubeArray && want == MTLTextureTypeCube);
+             (have == MTLTextureTypeCube && want == MTLTextureTypeCubeArray) || (have == MTLTextureTypeCubeArray && want == MTLTextureTypeCube) ||
+             (have == MTLTextureType2DArray && (want == MTLTextureTypeCube || want == MTLTextureTypeCubeArray) && (*t).arrayLength >= 6);
     if (!ok) { RED_ONCE(56, "貼圖類型對不上：著色器要 %lu，綁的是 %lu（貼圖號 %d），照綁", (unsigned long)want, (unsigned long)have, tid); return 0; }
     if (tid <= 0 || tid >= g_ntreg) return 0;
     treg_t *rp = &g_treg[tid];
     if (rp->tview && rp->tview_src == (__bridge void *)*t && rp->tview_type == (uint32_t)want) { *t = (__bridge id<MTLTexture>)rp->tview; return rp->tview_rid; }
-    NSUInteger ns = want == MTLTextureTypeCube || want == MTLTextureTypeCubeArray ? 6 : 1;
+    NSUInteger ns = have == MTLTextureType2DArray && want == MTLTextureTypeCubeArray ? (*t).arrayLength / 6 * 6 : want == MTLTextureTypeCube || want == MTLTextureTypeCubeArray ? 6 : 1;
     // 從底圖建、帶上原視圖的通道重排與級 / 層位置：原先在（可能已重排的）視圖上用不帶重排的方法建，重排丟了——朋友收集字形緩存是 R8 配 (1 1 1 R)，
     // 讀透明度的文字陰影著色器拿到恆為 1 的透明度，整個字形方塊被填滿，成了島名頁上的綠色方塊
     // Build from the base texture, carrying the original view's swizzle and level / layer position: it used to be built on the (possibly swizzled) view with the method without a swizzle, and the swizzle was lost -- Tomodachi Life's glyph cache is R8 with (1 1 1 R),
@@ -3005,8 +3012,16 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         c.pixelFormat = (MTLPixelFormat)k->cfmt[i];
         int l = merged ? k->lmap[i] : i;
         uint32_t m = l == 0xff ? 0 : (k->chmask >> (4 * l)) & 0xf;
+        // 片元著色器不寫的輸出號：寫掩碼清零、不混合。Maxwell 只寫著色器輸出圖裡有的目標，別的目標原樣不動（與混合狀態、通道掩碼無關）；
+        // Metal 上著色器不寫的附件內容未定義，開著混合時等於把未定義值混進去。超級馬力歐 3D 世界 + 狂怒世界 G 緩衝之後的體積繪製（50d813761ca3f1f9 等）只寫 0、2 號，
+        // 1 號（法線）與 3 號（預光照）開著 SRC_ALPHA 混合、通道全開（上游 42a50ef）
+        // Output numbers the fragment shader does not write: zero write mask, no blending. Maxwell writes only the targets in the shader's output map and leaves the others untouched (whatever the blend state and channel mask);
+        // on Metal an attachment the shader does not write has undefined contents, and with blending enabled that undefined value is blended in. Super Mario 3D World + Bowser's Fury's volume draws after the G-buffer (50d813761ca3f1f9 and others) write only outputs 0 and 2,
+        // while targets 1 (normals) and 3 (pre-lighting) have SRC_ALPHA blending and all channels enabled (upstream 42a50ef)
+        int unwritten = fs && fs->rf.color_known && !fsfn && l != 0xff && !(fs->rf.color_mask >> l & 1);
+        if (unwritten) m = 0;
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
-        if (l != 0xff && k->blend_en >> l & 1) {
+        if (l != 0xff && k->blend_en >> l & 1 && !unwritten) {
             c.blendingEnabled = YES;
             c.sourceRGBBlendFactor = bfac(k->blend[l].src_rgb); c.destinationRGBBlendFactor = bfac(k->blend[l].dst_rgb);
             c.sourceAlphaBlendFactor = bfac(k->blend[l].src_a); c.destinationAlphaBlendFactor = bfac(k->blend[l].dst_a);
@@ -3419,10 +3434,10 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (t && g_fbx_n && tid < g_ntreg) { id<MTLTexture> fv = fbx_bind(tid, t); if (fv) { t = fv; trid = fv.gpuResourceID._impl; } }   // 讀自己的附件：改讀開通道前的副本 | reading one's own attachment: read the copy made before the pass
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial);
-            if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu", g_stat_pass, nvn_stage, reg, tid, t ? "實" : "啞", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
+            if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu mtl=%p", g_stat_pass, nvn_stage, reg, tid, t ? "實" : "啞", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                        (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth,
                        (unsigned long)(t.parentTexture ? t.parentRelativeLevel : 0), (unsigned long)t.mipmapLevelCount,
-                       (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType);
+                       (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType, (__bridge void *)(t.parentTexture ? t.parentTexture : t));
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             slots[aid + e] = trid;
             USE(t, MTLResourceUsageRead);
@@ -5215,11 +5230,11 @@ frz_plain:;
     if (enc_label_on() && !g_el_draws++ && pr->sh[1]) { memcpy(g_el_key, pr->sh[1]->key, 8); g_el_key[8] = 0; }
     if (passdump()) {   // 通道首次繪製的特徵（判讀入是否可省：全屏、無混合、寫滿通道、不依賴深度）；DM_NVN_PASSDUMP_ALL 時每次繪製都記 | Characteristics of a render pass's first draw (to judge whether the load can be omitted: full screen, no blending, writes all channels, does not depend on depth); with DM_NVN_PASSDUMP_ALL every draw is recorded
         static uint64_t last_pass = ~0ull; static int all = -1; if (all < 0) all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
-        if (all) PD("d %llu bv=%d bi=%d first=%d vs=%s fs=%s vc=%d inst=%d blend=%#x b0=%#llx dt=%d dw=%d df=%d cull=%d st=%d sf=%d,%d sop=%d,%d,%d/%d,%d,%d smask=%#x,%#x/%#x,%#x sref=%#x,%#x ib=%#llx it=%d cmask=%#x", g_stat_pass, di ? di->base_vertex : 0, di ? di->base_instance : 0, dw ? dw->first : 0, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-",
+        if (all) PD("d %llu bv=%d bi=%d first=%d vs=%s fs=%s vc=%d inst=%d blend=%#x b0=%#llx dt=%d dw=%d df=%d cull=%d st=%d sf=%d,%d sop=%d,%d,%d/%d,%d,%d smask=%#x,%#x/%#x,%#x sref=%#x,%#x ib=%#llx it=%d cmask=%#x b1=%#llx b2=%#llx b3=%#llx", g_stat_pass, di ? di->base_vertex : 0, di ? di->base_instance : 0, dw ? dw->first : 0, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-",
                     dw ? dw->count : di->count, dw ? dw->instances : di->instances, S.color.blend_en, (unsigned long long)*(uint64_t *)&S.blend[0], (int)S.ds.dt, (int)S.ds.dw, (int)S.ds.df, (int)S.poly.cull,
                     (int)S.ds.st, (int)S.ds.sf_f, (int)S.ds.sf_b, (int)S.ds.fail_f, (int)S.ds.zfail_f, (int)S.ds.zpass_f,
                     (int)S.ds.fail_b, (int)S.ds.zfail_b, (int)S.ds.zpass_b, S.st_vmask[0], S.st_vmask[1], S.st_wmask[0], S.st_wmask[1], S.st_ref[0], S.st_ref[1],
-                    di ? (unsigned long long)di->ibuf : 0ull, di ? di->itype : 0, S.chmask.mask);
+                    di ? (unsigned long long)di->ibuf : 0ull, di ? di->itype : 0, S.chmask.mask, (unsigned long long)*(uint64_t *)&S.blend[1], (unsigned long long)*(uint64_t *)&S.blend[2], (unsigned long long)*(uint64_t *)&S.blend[3]);
         if (all && pr->sh[0]) {   // 頂點階段各常量緩衝的內容指紋（判某次繪製跨幀是否完全相同：陰影緩存等用）；讀不到（本提交待執行的寫）記 P | Content fingerprint of each constant buffer of the vertex stage (to judge whether a draw is completely identical across frames: used by the shadow cache etc.); when unreadable (a write pending execution in this submit) record P
             char ub[400]; size_t o = 0; NvShader *v = pr->sh[0];
             for (int i = 0; i < v->rf.nb && o < sizeof ub - 40; i++) if (v->rf.b[i].kind == NVN_RB_CBUF && v->rf.b[i].reg < 16) {
@@ -6372,7 +6387,7 @@ void ts_after(void) {
     if (!g_ts_on) return;
     id<MTLCommandBuffer> dcb = q_cb();
     for (int i = 0; i < g_ts_na; i++) {
-        id<MTLTexture> t = g_ts_att[i]; if (t.textureType != MTLTextureType2D) continue;
+        id<MTLTexture> t = g_ts_att[i]; if (t.textureType != MTLTextureType2D && t.textureType != MTLTextureType2DArray) continue;   // 二維數組取第 0 層 | 2D arrays take slice 0
         MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:t.pixelFormat width:t.width height:t.height mipmapped:t.mipmapLevelCount > 1];
         d.usage = MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate; d.mipmapLevelCount = t.mipmapLevelCount;
         id<MTLTexture> c = [g_dev newTextureWithDescriptor:d];

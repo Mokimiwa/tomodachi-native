@@ -137,7 +137,11 @@ NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const
 // 設備屬性：Tegra X1 實測值（nnheaders nvn_DeviceConstantsNX.h，在 SMO 上逐項調 nvnDeviceGetInteger 得到）
 // Device properties: values measured on Tegra X1 (nnheaders nvn_DeviceConstantsNX.h, obtained by calling nvnDeviceGetInteger item by item on SMO)
 static const int g_devinfo[] = {
-    [0x00] = 55, [0x01] = 15,    // API 版本：D2R 讀了不比較；SMBW（SDK 16）要求主版本 == 55、次版本 ≥ 15（main 0x5a7b48）。DM_NVN_API=主.次 可改 | API version: D2R reads it without comparing; SMBW (SDK 16) requires major == 55 and minor >= 15 (main 0x5a7b48). DM_NVN_API=major.minor overrides
+    // API 版本取遊戲檔案 device_api（缺省 55.15）：D2R 讀了不比較；SMBW（SDK 16）要求主版本 == 55、次版本 ≥ 15（main 0x5a7b48）；超級馬力歐 3D 世界 + 狂怒世界（SDK 10）要求主版本 == 53、次版本 ≥ 313（main+0x711c88），
+    // 不符時不建設備、設備指針留空，nnMain 裡隨即空指針崩潰。DM_NVN_API=主.次 可改（上游 42a50ef）
+    // API version from the profile's device_api (default 55.15): D2R reads it without comparing; SMBW (SDK 16) requires major == 55 and minor >= 15 (main 0x5a7b48); Super Mario 3D World + Bowser's Fury (SDK 10) requires major == 53 and minor >= 313 (main+0x711c88),
+    // and on a mismatch it creates no device and leaves the device pointer null, which crashes in nnMain right after. DM_NVN_API=major.minor overrides (upstream 42a50ef)
+    [0x00] = DM_GAME_NVN_API_MAJOR, [0x01] = DM_GAME_NVN_API_MINOR,
     [0x02] = 14, [0x03] = 65536, [0x04] = 256, [0x05] = 8, [0x06] = 16, [0x07] = 4, [0x08] = 16, [0x09] = 32,
     [0x0A] = 16, [0x0B] = 4, [0x0C] = 4, [0x0D] = 4, [0x0E] = 16, [0x0F] = 32, [0x10] = 32, [0x11] = 256, [0x12] = 256,
     [0x13] = 4, [0x14] = 8, [0x15] = 512, [0x16] = 256, [0x17] = 2, [0x18] = 256, [0x19] = 4096, [0x1A] = 131072,
@@ -403,8 +407,12 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     memcpy(&ncode, (const uint8_t *)sd->control + 0x704, 4);
     int code = sd->data && ncode && ncode < (1u << 24);
     if (mapped && !(code && mtl_addr(sd->data, ncode, &mb, &mo))) return 0;
+    // 控制段 +0x20 是它自己的長度：不短於 0x880 的（馬力歐、Engage、生存恐懼、十三機兵、朋友收集全部）取前 0x880；SDK 10 的 3D 世界有 0x850 字節的，後面緊跟別的數據，只取它自己的長度（shader_split.py ctl_len，上游 42a50ef）
+    // Control +0x20 holds the section's own length: sections of at least 0x880 bytes (all of Mario's, Engage's, Dread's, 13 Sentinels' and Tomodachi Life's) use the first 0x880; SDK 10's 3D World has 0x850-byte ones followed by other data, so only their own length is used (shader_split.py ctl_len, upstream 42a50ef)
+    uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)sd->control + 0x20, 4);
+    if (own >= 0x760 && own < 0x880) nctl = own;
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
-    CC_SHA256_Update(&hc, sd->control, 0x880);
+    CC_SHA256_Update(&hc, sd->control, nctl);
     if (code) CC_SHA256_Update(&hc, (const void *)(uintptr_t)sd->data, ncode);
     CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
     return 1;
@@ -958,6 +966,10 @@ static const char *const g_nops[] = {
     "nvnCommandBufferPopDebugGroup",
     "nvnCommandBufferInsertDebugMarkerDynamic",
     "nvnCommandBufferInsertDebugMarker",   // 十三機兵防衛圈 | 13 Sentinels
+    "nvnCommandBufferPushDebugGroup",      // 超級馬力歐 3D 世界 + 狂怒世界（NVN 53） | Super Mario 3D World + Bowser's Fury (NVN 53)
+    "nvnCommandBufferPushDebugGroupStatic",
+    "nvnCommandBufferPopDebugGroupId",
+    "nvnCommandBufferInsertDebugMarkerStatic",
     "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
 };
@@ -1055,6 +1067,11 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     if (tk) { uint64_t w0 = now_ns(); mtl_present_wait(tk); g_pq_wait_ns += now_ns() - w0; }
     if (s) { ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = mtl_last_fence(); }   // 交換鏈貼圖在此前的提交完成後可用 | The swapchain texture becomes available once the commits before this point have completed
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
+}
+// 舊 API（NVN 53，超級馬力歐 3D 世界 + 狂怒世界）：取圖由隊列在 GPU 上等，不交同步對象。宿主按提交順序回放，之後的命令本來就排在此前出圖之後，同 WindowAcquireTexture 不帶同步對象（上游 42a50ef）
+// The older API (NVN 53, Super Mario 3D World + Bowser's Fury): the queue waits for the texture on the GPU and no sync object is handed out. The host replays in submission order, so later commands already come after earlier presents; the same as WindowAcquireTexture without a sync object (upstream 42a50ef)
+NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow *w, int *idx) {
+    (void)q; return h_nvnWindowAcquireTexture(w, NULL, idx) == NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS ? (NVNqueueAcquireTextureResult)0 : (NVNqueueAcquireTextureResult)1;
 }
 
 // 幀邊界：每次出圖打印 / 落盤本幀各 NVN 函數調用次數
@@ -1488,6 +1505,12 @@ NVN(nvnSamplerGetCompare, void, const NVNsampler *s, NVNcompareMode *m, NVNcompa
 NVN(nvnSamplerGetBorderColor, void, const NVNsampler *s, float *c) { memcpy(c, SP(s)->border, 16); }
 NVN(nvnSamplerGetMaxAnisotropy, float, const NVNsampler *s) { return SP(s)->aniso; }
 NVN(nvnSamplerGetReductionFilter, NVNsamplerReduction, const NVNsampler *s) { (void)s; return (NVNsamplerReduction)0; }
+// 兩個採樣器狀態是否相同（遊戲拿它去重採樣器池項） | whether two samplers have the same state (games use it to deduplicate sampler pool entries)
+NVN(nvnSamplerCompare, NVNboolean, const NVNsampler *a, const NVNsampler *b) {
+    const samp_par *x = SP(a), *y = SP(b);
+    return x->minf == y->minf && x->magf == y->magf && x->ws == y->ws && x->wt == y->wt && x->wr == y->wr && x->cmp_mode == y->cmp_mode && x->cmp_func == y->cmp_func &&
+           x->lod_min == y->lod_min && x->lod_max == y->lod_max && x->lod_bias == y->lod_bias && x->aniso == y->aniso && !memcmp(x->border, y->border, sizeof x->border);
+}
 
 // 貼圖 builder / 貼圖 / 視圖
 // Texture builder / texture / view
@@ -1514,6 +1537,7 @@ NVN(nvnTextureGetSwizzle, void, const NVNtexture *t, NVNtextureSwizzle *r, NVNte
     if (r) *r = (NVNtextureSwizzle)(s & 7); if (g) *g = (NVNtextureSwizzle)(s >> 3 & 7); if (b) *b = (NVNtextureSwizzle)(s >> 6 & 7); if (a) *a = (NVNtextureSwizzle)(s >> 9 & 7);
 }
 NVN(nvnTextureGetStride, ptrdiff_t, const NVNtexture *t) { return (ptrdiff_t)CTX(t)->d.stride; }
+NVN(nvnTextureGetStorageClass, NVNstorageClass, const NVNtexture *t) { (void)t; return 0; }   // 宿主不分存儲類，同建造器給 0（狂怒世界用，上游 42a50ef） | the host has no storage classes, 0 as for the builder (used by Bowser's Fury, upstream 42a50ef)
 NVN(nvnTextureGetTarget, NVNtextureTarget, const NVNtexture *t) { return (NVNtextureTarget)CTX(t)->d.target; }
 NVN(nvnTextureSetDebugLabel, void, NVNtexture *t, const char *s) { (void)t; (void)s; }
 NVN(nvnTextureViewGetLevels, NVNboolean, const NVNtextureView *v, int *base, int *n) { const view_t *w = (const view_t *)v; *base = w->base_level; *n = w->nlevels; return w->set_levels; }

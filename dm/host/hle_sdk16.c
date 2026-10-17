@@ -118,8 +118,13 @@ static font_t font_get(int type) {
     return f;
 }
 HLE_FORCE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", "共享字體裝載狀態：已裝（1）", int, h_pl_LoadState, int type) { return font_get(type).p ? 1 : 0; }
-HLE_FORCE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", "共享字體地址 → BFTTF 頭（宿主替身字體）", const void *, h_pl_Addr, int type) { return font_get(type).p; }
-HLE_FORCE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", "共享字體大小 → 頭 8 字節 + 替身字體文件大小", size_t, h_pl_Size, int type) { return font_get(type).n; }
+// 遊戲檔案 shared_font ttf（超級馬力歐 3D 世界 + 狂怒世界，SDK 10）：地址處直接是 TTF（跳過 8 字節頭），大小不含頭。該作把共享字體記作類型 0（main+0x975658），
+//   不調 Decode、把地址原樣交給 ScalableFontEngine::LoadFont；帶頭時 LoadFont 報錯 403、SetFont 報 301，之後查「?」字形處處落空，main+0x6c73c0 空指針崩潰（上游 42a50ef）
+// The profile's shared_font ttf (Super Mario 3D World + Bowser's Fury, SDK 10): the address points straight at the TTF (past the 8-byte header) and the size excludes the header. That game records shared fonts as type 0 (main+0x975658),
+//   calls no Decode and hands the address as is to ScalableFontEngine::LoadFont; with the header LoadFont fails with error 403 and SetFont with 301, every lookup of the "?" glyph then misses, and main+0x6c73c0 crashes on a null pointer (upstream 42a50ef)
+static const size_t k_font_skip = DM_GAME_SHARED_FONT_TTF ? 8 : 0;
+HLE_FORCE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", "共享字體地址 → BFTTF 頭（檔案 shared_font ttf：TTF 本身）", const void *, h_pl_Addr, int type) { const uint8_t *p = font_get(type).p; return p ? p + k_font_skip : NULL; }
+HLE_FORCE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", "共享字體大小 → 頭 8 字節 + 替身字體文件大小（檔案 shared_font ttf：不含頭）", size_t, h_pl_Size, int type) { font_t f = font_get(type); return f.p ? f.n - k_font_skip : 0; }
 // 是否跑在 Switch 2（代號 Ounce）上（返回 bool）：宿主按 Switch 1 報假。馬力歐 1.2.1 據此決定要不要數追加內容（升級包）、提示升級到 Switch 2 版
 // Whether running on a Switch 2 (codename Ounce) (returns bool): the host reports false, as a Switch 1. Mario 1.2.1 uses it to decide whether to count add-on content (the upgrade pack) and suggest the Switch 2 Edition
 HLE_FORCE("_ZN2nn2pl16IsRunningOnOunceEv", "是否 Switch 2：否", unsigned, h_pl_IsOunce, void) { return 0; }

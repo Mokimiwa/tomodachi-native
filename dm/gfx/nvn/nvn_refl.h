@@ -43,7 +43,7 @@ typedef struct {
     // 片元——可能丟棄、寫 sample_mask、寫出的顏色號位圖
     // For the fully-covering-first-draw proof (dmsh_build.py raster_facts; missing field = not provable): vertex - position xyz taken as-is from attribute pos_attr (-1 = no), w is the constant 1 (pos_w1) or taken from the same attribute's .w;
     // fragment - may discard, writes sample_mask, bitmap of the color numbers written
-    int8_t pos_attr; uint8_t pos_w1, may_discard, writes_smask, color_mask;
+    int8_t pos_attr; uint8_t pos_w1, may_discard, writes_smask, color_mask, color_known;   // color_known：出包時記下了顏色號列表（color_mask 可信） | color_known: the color list was recorded at packaging (color_mask can be trusted)
     // 合併 B 第 2 步（可讀 tile 版本 <鍵>_bf，dmsh_fetch.py）：片元——可改採樣 nfc 次（第 i 次：貼圖槽 fc_reg、插值輸出 fc_locn）、
     // 混用的貼圖槽位圖 fc_mixed（這些槽不得改讀 tile）、輸出 nfo 個（各自的顏色號 fo_color）；頂點——插值輸出 locn 的 .xy 原樣取自屬性 uv_attr[locn]（-1 = 否）
     // Merge B step 2 (readable-tile version <key>_bf, dmsh_fetch.py): fragment - nfc redirectable samples (the i-th: texture slot fc_reg, interpolated output fc_locn),
