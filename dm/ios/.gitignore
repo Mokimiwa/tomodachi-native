@@ -1,3 +1,5 @@
 Gen/
 DmIOS.xcodeproj/
 Sources/Info.plist
+GenPreview/
+DuoPreview.xcodeproj/

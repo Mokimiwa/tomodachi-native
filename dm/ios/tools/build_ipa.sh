@@ -11,6 +11,10 @@
 #   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none)
 #   The app name is the game name in the base NSP's control data ($W/data/v0/control.nacp, else the one next to the RomFS), the bundle ID is org.nxnative.<base game title ID in lowercase> (DM_DISPLAY_NAME / DM_BUNDLE_ID override them);
 #   the IPA name, code modules, RomFS marker and shader tables come from the game profile
+# SIGN_TEAM=<團隊 ID>：改出用自己的開發者團隊自動簽名的 .app（不打 IPA，RomFS 不進包），自己的設備用 devicectl 裝（SIGN_DEVICE=<UDID> 把那台設備註冊進團隊的描述檔）；
+#   RomFS 另外拷進 App 的 Documents/romfs 一次就好（main.m 認那裡），之後每次更新 App 只傳幾百 MB。描述檔由 Xcode 自動簽名產生（-allowProvisioningUpdates，用 Xcode 裡已登入的帳號）
+# SIGN_TEAM=<team ID>: build a .app automatically signed by your own developer team instead (no IPA, RomFS left out), installed on your own device with devicectl (SIGN_DEVICE=<UDID> registers that device in the team's profile);
+#   the RomFS goes into the app's Documents/romfs once (main.m looks there), so later updates send only a few hundred MB. The profile comes from Xcode's automatic signing (-allowProvisioningUpdates, with the account already signed in to Xcode)
 set -u
 cd "$(dirname "$0")/.." || exit 1
 IOS=$PWD; DM=$(cd .. && pwd)
@@ -21,7 +25,7 @@ gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }
 [ -f "$GD/game.tsv" ] || die "no game profile $GD/game.tsv"
 W=${W:-$HOME/$GAME-work}; PKG=$(gp package)
 PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/ios/dmsh_b}; AOC=${AOC-$W/data/aoc}
-OUT_IPA=${1:-$HOME/Desktop/$(gp ipa)}; O=$W/build/ios/pkg; DD=$O/dd
+OUT_IPA=${1:-$HOME/Desktop/$(gp ipa)}; O=$W/build/ios/pkg; DD=$O/dd; SIGN_TEAM=${SIGN_TEAM:-}
 MODS=$(gp modules); MARKER=$(gp romfs_marker)
 NACP=$W/data/v0/control.nacp; [ -f "$NACP" ] || NACP=$(dirname "$ROMFS")/control.nacp
 [ -n "${DM_DISPLAY_NAME:-}" ] || DM_DISPLAY_NAME=$(python3 "$DM/tools/nacp.py" "$NACP") || die "no game name in $NACP (re-extract with nx_extract, or set DM_DISPLAY_NAME)"
@@ -30,6 +34,11 @@ for f in $MODS; do [ -f "$PATCHED/$f.patched.bin" ] && [ -f "$PATCHED/$f.fixups.
 [ -e "$ROMFS/$MARKER" ] || die "no RomFS at $ROMFS (missing $MARKER)"
 V=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$GD/dmsh_chain.h")
 [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || die "no iOS shader libraries $MSL_IOS/b-$V (IOSOUT=$MSL_IOS dmsh_build.py ...)"
+# 只出了一部分的庫（例如中斷過的出包）照樣能打包，但真機上大半著色器會載不了：與 Mac 出包緩存的鍵數對一下，少了就停（MSL_PARTIAL=1 照樣打）
+# A partly built set (an interrupted build, say) still packages, but most shaders would then fail to load on the device: compare with the key count of the Mac build cache and stop when short (MSL_PARTIAL=1 packages anyway)
+NI=$(ls "$MSL_IOS/b-$V" | grep -c '_b.metallib$'); NM=$(ls "$W/build/cache/metal_shader_cache/b-$V" 2> /dev/null | grep -c '_b.metallib$')
+if [ "$NM" -eq 0 ]; then t "no Mac build cache to compare with: $NI iOS shader libraries, not checked"
+else [ "$NI" -ge "$NM" ] || [ -n "${MSL_PARTIAL:-}" ] || die "iOS shader libraries incomplete: $NI of $NM in $MSL_IOS/b-$V (finish IOSOUT=... dmsh_build.py, or MSL_PARTIAL=1)"; t "iOS shader libraries: $NI (Mac cache $NM)"; fi
 
 t "app: $DM_DISPLAY_NAME ($DM_BUNDLE_ID)"
 t "generate Gen/ (host sources, embedded modules, tables, shader libraries)"
@@ -61,17 +70,39 @@ if [ -f "$ICON" ]; then
   echo "DM_APPICON = AppIcon" >> Gen/dm.xcconfig
   t "app icon: $ICON"
 else t "no app icon ($ICON not found): the home-screen icon stays blank"; fi
+# Duo 外殼的圖：Logo 與底部波浪從遊戲檔案取（tools/duo_assets.py，取不到 Logo 就用遊戲圖標），闔上的聲音從 DUO_LOCAL（缺省 $W/demo/preview）拷；都只在 Gen/duo，不進版本庫。
+# 啓動畫面的黃（#FFC100）放進資源目錄，Info.plist 的 UILaunchScreen 用它
+# Duo shell pictures: the logo and the bottom wave from the game files (tools/duo_assets.py; the game icon when there is no logo), the closing sound copied from DUO_LOCAL (default $W/demo/preview); all only in Gen/duo, never in the repository.
+# The launch screen's yellow (#FFC100) goes into the asset catalog for UILaunchScreen in Info.plist
+mkdir -p Gen/duo Gen/Assets.xcassets/LaunchYellow.colorset || die "mkdir Gen/duo"
+DUO=$(python3 -I tools/duo_assets.py "$ROMFS" Gen/duo "$ICON") || die "duo_assets.py"; t "duo pictures: $DUO"
+for f in "${DUO_LOCAL:-$W/demo/preview}"/hinge_close.*; do [ -f "$f" ] && cp "$f" Gen/duo/ && t "closing sound: $f"; done
+printf '{"colors":[{"color":{"color-space":"srgb","components":{"red":"1.000","green":"0.757","blue":"0.000","alpha":"1.000"}},"idiom":"universal"}],"info":{"author":"xcode","version":1}}\n' > Gen/Assets.xcassets/LaunchYellow.colorset/Contents.json
 xcodegen generate -q > /dev/null || die "xcodegen"
 
-t "xcodebuild (Release, unsigned, iPhone + iPad)"
 mkdir -p "$O"
-xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build > "$O/build.log" 2>&1 \
-  || { grep -E 'error:' "$O/build.log" | head -20; die "xcodebuild, log $O/build.log"; }
+if [ -n "$SIGN_TEAM" ]; then
+  # SIGN_DEVICE=<設備 UDID>：以那台設備為目標，第一次會把它註冊進團隊的描述檔（自動簽名做的） | SIGN_DEVICE=<device UDID>: target that device, registering it in the team's profile the first time (done by automatic signing)
+  DEST='generic/platform=iOS'; REG=; [ -n "${SIGN_DEVICE:-}" ] && { DEST="id=$SIGN_DEVICE"; REG=-allowProvisioningDeviceRegistration; }
+  t "xcodebuild (Release, automatic signing with team $SIGN_TEAM, $DEST)"
+  xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination "$DEST" -derivedDataPath "$DD" -allowProvisioningUpdates $REG \
+    DEVELOPMENT_TEAM="$SIGN_TEAM" CODE_SIGN_STYLE=Automatic build > "$O/build.log" 2>&1 \
+    || { grep -E 'error:' "$O/build.log" | head -20; die "xcodebuild, log $O/build.log"; }
+else
+  t "xcodebuild (Release, unsigned, iPhone + iPad)"
+  xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build > "$O/build.log" 2>&1 \
+    || { grep -E 'error:' "$O/build.log" | head -20; die "xcodebuild, log $O/build.log"; }
+fi
 # Xcode 的 Locations 設成自定義位置時，產物不進 -derivedDataPath：從本次構建日誌裡取實際路徑
 # When Xcode's Locations setting is a custom location, products ignore -derivedDataPath: take the actual path from this build's log
 APP=$DD/Build/Products/Release-iphoneos/DmIOS.app; [ -d "$APP" ] || APP=$(grep -o '/[^ ]*/Release-iphoneos/DmIOS\.app' "$O/build.log" | tail -1)
 [ -n "$APP" ] && [ -d "$APP" ] || die "no built app"; t "app: $APP"
+if [ -n "$SIGN_TEAM" ]; then
+  t "signed app ready. Install: xcrun devicectl device install app --device <device> \"$APP\""
+  t "game files, once: xcrun devicectl device copy to --device <device> --domain-type appDataContainer --domain-identifier $DM_BUNDLE_ID --source \"$ROMFS\" --destination Documents/romfs"
+  exit 0
+fi
 
 t "assemble Payload (app + RomFS)"
 rm -rf "$O/Payload" && mkdir -p "$O/Payload" && cp -cR "$APP" "$O/Payload/DmIOS.app" || die "copy app"
