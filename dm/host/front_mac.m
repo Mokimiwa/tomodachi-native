@@ -7,7 +7,7 @@
 //   左鍵的默認由遊戲檔案定（game.tsv mouse_left，缺省 A）：朋友收集默認 Pointer。
 // 改鍵：DM_KEYMAP=<文件>（缺省 $DM_ROOT/keymap.txt），每行「來源 <Switch 控制項>」，逐條覆蓋默認表；來源 key:<鍵名>（見 k_keyname，按美式鍵盤的鍵位，不隨輸入法變）、
 //   mouse:Left / Right / Other / Move、trackpad:Scroll / Rotate、pinch:In / Out、swipe:Left / Right / Up / Down。表文件改過後，窗口回到前台時自動重讀。
-// 窗口與菜單（Mac 原生）：標題欄三個按鈕都能用（關 = 退出前確認、縮到最小 = 掛起、綠鈕 = 全屏）；全屏或窗口比例不是畫面比例（缺省 16:9；DM_ASPECT / 設定 GameAspect 可放寬，見 dm_aspect.h）時畫面按比例居中、兩邊補黑；
+// 窗口與菜單（Mac 原生）：標題欄三個按鈕都能用（關 = 退出前確認、縮到最小 = 掛起、綠鈕 = 全屏）；全屏或窗口比例不是畫面比例（缺省 16:9；DM_ASPECT / 設定 GameAspect 可改，見 dm_aspect.h）時畫面按比例居中、兩邊補黑；
 //   菜單有 關於 / 編輯按鍵 / 隱藏 / 退出，編輯（輸入框裡拷貝粘貼用），遊戲（暫停、截圖、存檔文件夾、遊戲語言），顯示方式（三檔窗口大小、全屏），窗口，輔助說明（操作方式、日誌）。
 //   界面文字按系統首選語言出英文或繁體中文（k_text；任何一種中文都用繁體）。
 // Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard → mapping layer (dm_bind.h) → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
@@ -19,7 +19,7 @@
 //   The left button's default comes from the game profile (game.tsv mouse_left, A by default): Tomodachi Life defaults to Pointer.
 // Remapping: DM_KEYMAP=<file> (default $DM_ROOT/keymap.txt), one line per source "source <Switch control>", overriding the default table entry by entry; sources key:<key name> (see k_keyname, by US keyboard position, independent of the input method),
 //   mouse:Left / Right / Other / Move, trackpad:Scroll / Rotate, pinch:In / Out, swipe:Left / Right / Up / Down. After the file changes it is reread automatically when the window comes back to the front.
-// Window and menus (native Mac): all three title bar buttons work (close = confirm before quitting, minimize = suspend, green = full screen); in full screen or at a window shape other than the picture's (16:9 by default; DM_ASPECT / the GameAspect setting can widen it, see dm_aspect.h) the picture is centred at its own aspect with black bars;
+// Window and menus (native Mac): all three title bar buttons work (close = confirm before quitting, minimize = suspend, green = full screen); in full screen or at a window shape other than the picture's (16:9 by default; DM_ASPECT / the GameAspect setting can change it, see dm_aspect.h) the picture is centred at its own aspect with black bars;
 //   the menus hold About / Edit Controls / Hide / Quit, Edit (copy and paste in the text box), Game (pause, screenshot, save folder, game language), View (three window sizes, full screen), Window, Help (controls, log).
 //   Interface text follows the system's preferred language: English or Traditional Chinese (k_text; any Chinese gets Traditional).
 #import <Cocoa/Cocoa.h>
@@ -61,8 +61,8 @@ static double game_aspect(void) {
     });
     return a;
 }
-// 遊戲檔案的 16:9 尺寸按畫面寬高比同高放寬（DM_ASPECT 沒給 = 原值，行為不變）；DM_GAME_RES=寬x高（主機模式，掌機按 720/900 同比）只供與 iOS 寬屏對拍
-// The game profile's 16:9 sizes widened at the same height for the picture aspect ratio (no DM_ASPECT = the original values, behaviour unchanged); DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
+// 遊戲檔案的 16:9 尺寸按畫面寬高比改形狀（寬的同高放寬、高的同寬加高；DM_ASPECT 沒給 = 原值，行為不變）；DM_GAME_RES=寬x高（主機模式，掌機按 720/900 同比）只供與 iOS 寬屏對拍
+// The game profile's 16:9 sizes reshaped for the picture aspect ratio (wider ones widen at the same height, taller ones grow taller at the same width; no DM_ASPECT = the original values, behaviour unchanged); DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
 uint64_t front_game_res(int docked) {
     unsigned w, h; const char *e = getenv("DM_GAME_RES");
     if (e && sscanf(e, "%ux%u", &w, &h) == 2) return docked ? (uint64_t)h << 32 | w : (uint64_t)(h * 4 / 5) << 32 | (w * 4 / 5 + 3) / 4 * 4;

@@ -12,6 +12,7 @@
 static int checks, fails;
 void gesture_feed(const int32_t (*pt)[2], int n, uint64_t now) { (void)pt; (void)n; (void)now; }   // 手勢識別另有單測 | gesture recognition is tested separately
 uint64_t now_ns(void) { return 0; }
+uint64_t dm_game_res(int docked) { (void)docked; return (uint64_t)1080 << 32 | 1920; }   // 出圖 16:9：界面帶不換算觸點 | 16:9 output: the UI band leaves touch points as they are
 #define CHECK(c, ...) do { checks++; if (c) printf("  ✓ "); else { fails++; printf("  ✗ "); } printf(__VA_ARGS__); printf("\n"); } while (0)
 
 static uint64_t s_btn; static int32_t s_ax[4];

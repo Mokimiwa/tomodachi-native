@@ -53,7 +53,7 @@ dm_bright_levels.inc: ../tools/gen_bright_levels.py ../ios/tools/touch_layout.py
 	python3 ../tools/gen_bright_levels.py "$(ROMFS)" > $@.tmp && mv $@.tmp $@
 .PHONY: game_profile
 game_profile: $(GAME_H)
-$(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py
+$(GAME_H): $(GAME_DIR)/game.tsv $(GAME_DIR)/shader_map.tsv ../games/game.py
 	python3 ../games/game.py header $(GAME) $@
 # 記下宿主是按哪個遊戲編的：換 GAME 時戳記內容變、宿主重編（否則 make 看 dmhost 比兩份表頭都新，照舊用另一個遊戲的宿主）。
 # 換遊戲時順手刪掉舊宿主：時間只精確到秒的盤上，戳記與上一個遊戲的 dmhost 可能同一秒，make 會當宿主已是最新

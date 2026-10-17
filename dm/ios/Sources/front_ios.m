@@ -95,7 +95,7 @@ static double game_aspect(void) {
 UIViewController *front_ios_root(void) { return [DmRootVC new]; }
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
-uint64_t front_game_res(int docked) { return dm_aspect_game_res(docked, game_aspect()); }   // 同 Mac：遊戲檔案的 16:9 尺寸，按畫面寬高比同高放寬 | Same as Mac: the game profile's 16:9 sizes, widened at the same height for the picture aspect ratio
+uint64_t front_game_res(int docked) { return dm_aspect_game_res(docked, game_aspect()); }   // 同 Mac：遊戲檔案的 16:9 尺寸，按畫面寬高比改形狀 | Same as Mac: the game profile's 16:9 sizes, reshaped for the picture aspect ratio
 void front_run(void (*guest)(void)) { guest(); }   // 已在 main.m 的大棧線程上 | Already on main.m's big-stack thread
 
 // 軟鍵盤輸入框：主線程彈 UIAlertController，調用線程等結果 | Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result

@@ -952,19 +952,23 @@ PARAMS = {'db0507f36b84200ac05f75d76ed5026f': [
     (0x23e888, '52838e48', 0x23e88c, '72a800e8', 8, 'KASPECT', '新畫面模式坐標鉗制（0x23e760）：x 夾進 [邊距, 邊距 + 屏高 × 上限]，寬屏兩側的指針 / 觸摸不再被夾回中間'),
   ],
   # 朋友收集 夢想生活 v0 main：寬屏。主機模式輸出 1920x1080 寫死在三處，都換成參數位（宿主缺省給原值，行為不變；寬屏時同高放寬，見 dm/host/dm_aspect.c）。
-  # 掌機那組 1280x720（0x8eee30）不動：它是遊戲的虛擬屏幕，相機寬高比、界面畫布、指針與觸屏都按它算。不改時界面整層橫向拉寬到輸出寬度（圓變橢圓），
-  # 但指針、觸屏、Mii 頭上的提示都還對得上；改了界面畫布變寬、不再拉伸，可遊戲裡寫死 1280x720 的屏幕坐標換算（小手的範圍、提示的位置）就錯位（實測）。
+  # 掌機那組 1280x720（0x8eee30）不動：它是遊戲的虛擬屏幕，相機寬高比、界面畫布、指針與觸屏都按它算。不改時界面按 16:9 畫、會隨輸出拉伸，
+  # 回放把它畫進置中的 16:9 帶（nvn_mtl.m ui_band）；改了界面畫布變寬，可遊戲裡寫死 1280x720 的屏幕坐標換算（小手的範圍、提示的位置）就錯位（實測）。
   # 偏移 B 為 None 的是單條指令的浮點常數：跳板把參數位整個 64 位讀進 xR，指令只用低 32 位（KRESF 的低 32 位 = 寬的浮點位模式）。
   # 寬高比另見下方 ASPECT（投影構造裡把 16:9 換成輸出寬高比）
   # Tomodachi Life: Living the Dream v0 main: widescreen. The docked output 1920x1080 is hard-coded in three places, all replaced by parameter slots (the host gives the original values by default, so behaviour is unchanged; when wide it widens at the same height, see dm/host/dm_aspect.c).
-  # The handheld pair 1280x720 (0x8eee30) is left alone: it is the game's virtual screen, from which the camera aspect, the UI canvas, the pointer and touch are computed. Left alone, the whole UI layer is stretched sideways to the output width (circles become ovals),
-  # but the pointer, touch and the markers over Miis stay aligned; widening it gives a wider, unstretched UI canvas, but the game's hard-coded 1280x720 screen-space conversions (the hand's bounds, marker positions) then miss (measured).
+  # The handheld pair 1280x720 (0x8eee30) is left alone: it is the game's virtual screen, from which the camera aspect, the UI canvas, the pointer and touch are computed. Left alone the UI is drawn at 16:9 and would stretch with the output;
+  # the replay draws it into a centred 16:9 band instead (nvn_mtl.m ui_band). Widening it gives a wider UI canvas, but the game's hard-coded 1280x720 screen-space conversions (the hand's bounds, marker positions) then miss (measured).
   # A row whose offset B is None is a single-instruction float constant: the trampoline loads the whole 64-bit slot into xR and the instruction only uses the low 32 bits (the low 32 bits of KRESF = the width's float bit pattern).
   # For the aspect ratio see ASPECT below (16:9 replaced by the output aspect inside the projection constructor)
   '56bf85bd535413464cb75bb6c2683b67': [
     (0x8eee2c, 'd280f009', 0x8eee34, 'f2c08709', 9, 'KRES1', '框架配置：主機模式渲染尺寸 1920x1080（{u32 寬, u32 高} 存 [sp+0x150]，遊戲按它建主渲染目標）'),
     (0x903710, 'd280f008', 0x903714, 'f2c08708', 8, 'KRES1', 'nnMain 顯示配置：交換鏈貼圖尺寸 1920x1080（WindowInitialize 前建的兩張出圖貼圖）'),
-    (0x46e93c, '52a89e09', None, None, 9, 'KRESF', '每幀出圖裁切 0x46e8dc：裁切寬 = 1920.0 × 動態分辨率比例（mov w9, #1920.0）；高 1080.0 不動'),
+    (0x46e93c, '52a89e09', None, None, 9, 'KRESF', '每幀出圖裁切 0x46e8dc：裁切寬 = 1920.0 × 動態分辨率比例（mov w9, #1920.0）'),
+    # 裁切高 1080.0 兩處（Switch 2 / 主機路徑 0x46e928 兼作除數，0x46ed70 是主機分支）：KRESF 的高 32 位。比例 = 主機高 / 這個高 = 1，掌機 = 720 / 高
+    # The crop height 1080.0 in two places (the Switch 2 / docked path 0x46e928, also the divisor, and the docked branch 0x46ed70): the high 32 bits of KRESF. The scale = docked height / this height = 1, handheld = 720 / height
+    (0x46e928, '52a890e8', None, None, 8, 'KRESF.hi', '每幀出圖裁切 0x46e8dc：裁切高與比例除數 1080.0（mov w8, #1080.0）'),
+    (0x46ed70, '52a890e8', None, None, 8, 'KRESF.hi', '每幀出圖裁切 0x46e8dc 主機分支：裁切高 1080.0（mov w8, #1080.0）'),
   ],
 }
 params = PARAMS.get(BUILD_ID, [])
@@ -978,22 +982,30 @@ for oa, wa, ob_, wb, r, key, why in params:
         assert r not in regs_in(ins), f'參數位中間用到 x{r}：{o:#x} {ins.mnemonic} {ins.op_str}'
     start = here()
     tmp = 16 if r != 16 else 17
-    emit(STUR(tmp, 31, -16)); emit(MRS_TPIDRRO(r)); emit_slot_addr(r, tmp, key); emit(LDRX(r, r)); emit(LDUR(tmp, 31, -16)); emit(B(here(), oa + 4))
+    slot, _, half = key.partition('.')   # 「鍵.hi」= 取參數位的高 32 位（lsr #32） | "key.hi" = take the high 32 bits of the slot (lsr #32)
+    emit(STUR(tmp, 31, -16)); emit(MRS_TPIDRRO(r)); emit_slot_addr(r, tmp, slot); emit(LDRX(r, r))
+    if half == 'hi': emit(0xD360FC00 | (r << 5) | r)   # lsr xR, xR, #32
+    else: assert not half, f'參數位鍵寫法不對：{key}'
+    emit(LDUR(tmp, 31, -16)); emit(B(here(), oa + 4))
     struct.pack_into('<I', IMG, oa, B(oa, start))
     if ob_ is not None: struct.pack_into('<I', IMG, ob_, NOP)
     stat('param')
 
-# ---- 投影寬高比（僅宿主）：{NSO 構建號: (偏移, 原指令字)}。透視投影構造函數裡 fmov s8, s3（s3 = 調用方給的寬高比）換成跳板：
+# ---- 投影寬高比（僅宿主）：{NSO 構建號: (偏移, 原指令字, 主相機返回地址)}。透視投影構造函數裡 fmov s8, s3（s3 = 調用方給的寬高比）換成跳板：
 # 寬高比恰為 16:9（位模式 0x3fe38e39，1280/720 與常數 16/9 算出來都是它）時改成 KRESF 的 寬 / 高，其他比例（Mii 頭像等正方形、按視口算的）照原樣。
 # 跳板只用 x16 / x17（構造函數這時不用、隨後的 memset 調用也會改它們）與 s9（序言已存，0x8ce868 才寫）；參數位為 0（宿主沒給）時不改。
-# 16:9 輸出時寬 / 高 = 16:9，結果與原指令相同 ----
-# ---- Projection aspect ratio (host only): {NSO build ID: (offset, original instruction word)}. In the perspective projection constructor, fmov s8, s3 (s3 = the aspect ratio the caller passes) becomes a trampoline:
+# 16:9 輸出時寬 / 高 = 16:9，結果與原指令相同。
+# Hor+：輸出比 16:9 高（寬 / 高 < 16/9）且調用方是主相機（返回地址 = 第 3 項，主相機每幀在這裡重建投影）時，fovy（s2，0x8ce868 才拷走）乘 (16/9) ÷ 比例：
+# 橫向視野與 16:9 一樣、上下多看到一些；不乘就是縱向視野不變、左右變少。用 fovy·k 近似 2·atan(k·tan(fovy/2))（主相機 fovy 16°，誤差 < 1%，只影響視野大小、不影響比例） ----
+# ---- Projection aspect ratio (host only): {NSO build ID: (offset, original instruction word, main camera return address)}. In the perspective projection constructor, fmov s8, s3 (s3 = the aspect ratio the caller passes) becomes a trampoline:
 # when the aspect is exactly 16:9 (bit pattern 0x3fe38e39; both 1280/720 and the constant 16/9 produce it) it becomes KRESF width / height; other ratios (square ones such as Mii portraits, ones computed from a viewport) stay as they are.
 # The trampoline uses only x16 / x17 (unused by the constructor at this point, and the following memset call clobbers them anyway) and s9 (saved by the prologue, first written at 0x8ce868); when the slot is 0 (the host gave nothing) nothing changes.
-# With a 16:9 output, width / height = 16:9 and the result equals the original instruction ----
-ASPECT = {'56bf85bd535413464cb75bb6c2683b67': (0x8ce854, 0x1e204068)}
+# With a 16:9 output, width / height = 16:9 and the result equals the original instruction.
+# Hor+: when the output is taller than 16:9 (width / height < 16/9) and the caller is the main camera (return address = item 3; the main camera rebuilds its projection here every frame), fovy (s2, copied away only at 0x8ce868) is multiplied by (16/9) ÷ ratio:
+# the horizontal view stays as at 16:9 with more visible above and below; without it the vertical view stays and the sides shrink. fovy·k approximates 2·atan(k·tan(fovy/2)) (main camera fovy 16°, error < 1%, affects only how much is seen, not proportions) ----
+ASPECT = {'56bf85bd535413464cb75bb6c2683b67': (0x8ce854, 0x1e204068, 0x205c88)}
 if BUILD_ID in ASPECT:
-    off, word = ASPECT[BUILD_ID]
+    off, word, main_cam_ret = ASPECT[BUILD_ID]
     assert struct.unpack_from('<I', IMG, off)[0] == word, f'投影寬高比原指令不符 {off:#x}'
     assert off not in kinds and not any(seg[0].address <= off < seg[-1].address + 4 for seg in windows), f'投影寬高比與改寫點衝突 {off:#x}'
     start = here()
@@ -1006,13 +1018,22 @@ if BUILD_ID in ASPECT:
     emit(0x1E270208)                                   # fmov s8, w16（寬 | width）
     emit(0xD360FE10)                                   # lsr x16, x16, #32
     emit(0x1E270209)                                   # fmov s9, w16（高 | height）
-    emit(0x1E291908)                                   # fdiv s8, s8, s9
+    emit(0x1E291908)                                   # fdiv s8, s8, s9（比例 | ratio）
+    emit(ADRP(17, here(), main_cam_ret)); emit(ADDI(17, 17, main_cam_ret & 0xFFF)); emit(CMPR(30, 17))   # x17 = 主相機的返回地址；cmp x30, x17 | x17 = the main camera's return address
+    bne2 = len(patch); emit(0)                         # b.ne 回去 | b.ne back
+    emit(0x52800010 | (0x8e39 << 5)); emit(0x72A00010 | (0x3fe3 << 5)); emit(0x1E270209)   # s9 = 16/9
+    emit(0x1E292100)                                   # fcmp s8, s9
+    bge = len(patch); emit(0)                          # b.ge 回去（不比 16:9 高） | b.ge back (not taller than 16:9)
+    emit(0x1E281929)                                   # fdiv s9, s9, s8（k = (16/9) ÷ 比例 | k = (16/9) ÷ ratio）
+    emit(0x1E290842)                                   # fmul s2, s2, s9（fovy·k）
     back = here(); emit(B(back, off + 4))
     struct.pack_into('<I', patch, bne, 0x54000001 | (((back - (PATCH_OFF + bne)) >> 2) << 5))
     struct.pack_into('<I', patch, cbz, 0xB4000010 | (((back - (PATCH_OFF + cbz)) >> 2) << 5))
+    struct.pack_into('<I', patch, bne2, 0x54000001 | (((back - (PATCH_OFF + bne2)) >> 2) << 5))
+    struct.pack_into('<I', patch, bge, 0x5400000A | (((back - (PATCH_OFF + bge)) >> 2) << 5))
     put_branch(off, start); stat('aspect')
     cuts.append((off, struct.pack('<I', word).hex(), struct.pack('<I', B(off, start)).hex(),
-                 '投影構造的寬高比：16:9 換成 KRESF 寬 / 高（其他比例不動）', '僅宿主'))
+                 '投影構造的寬高比：16:9 換成 KRESF 寬 / 高（其他比例不動）；主相機在比 16:9 高的輸出上 fovy 乘 (16/9) ÷ 比例（Hor+）', '僅宿主'))
 
 # 既有三塊原生規則跳板均只使用後繼覆蓋的死臨時w8，不改w0/stat返回、sp或NZCV。
 # 6c6290位於原mode3門後；前方Blaze/引用計數與數據失效6c62dc分支、後方狀態更新不動。

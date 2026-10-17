@@ -62,8 +62,14 @@ mouse_left	Pointer
 
 # ---- 畫面 | Picture ----
 # 主機 1920x1080、掌機 1280x720（遊戲寫死的值，改寫器換成參數位）。寬屏時主機模式同高放寬到最多 2580（約 21.5:9）：
-# 3D 比例正確，界面整層橫向拉寬（見 dm/tools/patch_nso.py 本作 PARAMS）。再寬的寬度 Fl4sh9174 的 2580x1080 模組註明會崩，這裡也沒驗過；比 16:9 窄的屏幕不放窄（界面會被壓扁），仍出 16:9
+# 3D 比例正確（見 dm/tools/patch_nso.py 本作 PARAMS），界面畫進置中的 16:9 帶（見下方 ui_shaders）。再寬的寬度 Fl4sh9174 的 2580x1080 模組註明會崩，這裡也沒驗過
 # Docked 1920x1080, handheld 1280x720 (values hard-coded in the game, replaced by parameter slots in the rewriter). When wide, docked mode widens at the same height up to 2580 (about 21.5:9):
-# 3D keeps its proportions and the UI layer is stretched sideways (see this title's PARAMS in dm/tools/patch_nso.py). Fl4sh9174's 2580x1080 mod notes that anything wider crashes, and wider was not verified here either; screens narrower than 16:9 are not narrowed (the UI would be squeezed) and still get 16:9
+# 3D keeps its proportions (see this title's PARAMS in dm/tools/patch_nso.py) and the UI is drawn into a centred 16:9 band (see ui_shaders below). Fl4sh9174's 2580x1080 mod notes that anything wider crashes, and wider was not verified here either
 render_size	1920x1080 1280x720
 render_wide_max	2580
+# 比 16:9 高的屏幕（iPhone Duo 約 1.42:1）：主機模式同寬加高到最多 1350（1920x1350 實測可跑；原生 2670x1878 開機即崩在 main+0x188154，像素量上限，同上）
+# Screens taller than 16:9 (iPhone Duo, about 1.42:1): docked mode keeps the width and grows taller up to 1350 (1920x1350 runs; native 2670x1878 crashes at boot in main+0x188154, a pixel-count ceiling as above)
+render_tall_max	1350
+# 界面著色器的來源（shader_map.tsv 第 5 列前綴）：ui2d 內建、字型內建、各版面封存檔。不是 16:9 時界面畫進置中的 16:9 帶，不再拉伸
+# Sources of the UI shaders (column 5 prefixes in shader_map.tsv): ui2d built-ins, font built-ins and each layout archive. When not 16:9 the UI is drawn into a centred 16:9 band instead of being stretched
+ui_shaders	main#BNSH@0x363f000 main#BNSH@0x3637000 /Layout/

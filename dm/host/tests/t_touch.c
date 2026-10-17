@@ -12,6 +12,7 @@ int touch_fill(void *out, uint64_t now_ns);
 // 被測的 hle_touch.c 每次推送後把手指送去手勢識別（hle_gesture.c，另有單測）：這裡給空實現 | hle_touch.c feeds fingers to gesture recognition after each push (hle_gesture.c, tested separately): stubs here
 void gesture_feed(const int32_t (*pt)[2], int n, uint64_t now) { (void)pt; (void)n; (void)now; }
 uint64_t now_ns(void) { return 0; }
+uint64_t dm_game_res(int docked) { (void)docked; return (uint64_t)1080 << 32 | 1920; }   // 出圖 16:9：界面帶不換算觸點 | 16:9 output: the UI band leaves touch points as they are
 static int fails, cases;
 typedef struct { int64_t dt; uint32_t attr; int32_t fid, x, y; } want_pt;
 static void expect(const char *what, uint64_t now, int64_t samp, int n, const want_pt *w) {
