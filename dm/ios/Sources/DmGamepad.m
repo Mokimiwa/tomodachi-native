@@ -1,33 +1,41 @@
 // 虛擬手柄（任天堂鍵位）+ 實體手柄（GameController）。兩路合併後經 dm_input_set 交給宿主（hle_hid.c，鍵位見 dm_input.h）。
-//   上角：ZL 在上、L 在下（同一列），ZR / R 同，水滴形，尖朝屏角；頂邊正中：− / + 並排；
-//   左下角：左搖桿（環固定，推量按環心算，帶小死區）；右下角：A（右）B（下）X（上）Y（左）菱形，手指在鍵間滑動會換鍵。
-//   虛擬手柄沒有十字鍵和右搖桿，下角只各剩一個控件，所以貼屏角放（伸進側邊安全區一半）。控件都往邊角靠，給畫面多留地方；
-//   按鍵疊在畫面上，每個控件一個 CAShapeLayer：按下只換填色，搖桿只挪手柄頭，不整屏重畫。
-//   接上實體手柄時虛擬手柄隱藏，拔掉後重現。實體手柄全鍵都在（含十字鍵、右搖桿），按位置對應：下 = B、右 = A、左 = Y、上 = X（與 Switch 手柄的鍵位位置一致）。
+//   兩套佈局，頂邊正中的佈局鍵（標著當前佈局「2D」/「3D」）點一下即換，記在 NSUserDefaults（每個遊戲是單獨的 App，各記各的）；首次按遊戲檔案的 pad_layout（DM_GAME_PAD_FULL）。
+//   2D（簡潔）：上角 ZL 在上、L 在下（同一列），ZR / R 同，水滴形，尖朝屏角；頂邊正中 − / + 並排；左下角左搖桿（環固定，推量按環心算，帶小死區）；
+//     右下角 A（右）B（下）X（上）Y（左）菱形，手指在鍵間滑動會換鍵。下角各只一個控件，所以貼屏角放（伸進側邊安全區一半）。
+//   3D（完整，Pro 手柄式）：2D 的全部（左搖桿、菱形位置大小不變），加十字鍵（左搖桿內側偏下，8 向）、右搖桿（菱形內側偏下，環略小）、
+//     L3 / R3（頂行 ZL / ZR 內側的小圓鍵）。曠野之息用 L3 蹲下、R3 望遠鏡，3D 世界和曠野之息用右搖桿轉視角。
+//   按下時的歸屬：先看鎖定的鍵（肩鍵、− / +、佈局鍵、L3 / R3），再在菱形、十字鍵、兩個搖桿裡取「距離 / 抓取半徑」最小的（左搖桿的抓取圈與十字鍵相鄰）。
+//   控件都往邊角靠，給畫面多留地方；按鍵疊在畫面上，每個控件一個 CAShapeLayer：按下只換填色，搖桿只挪手柄頭，不整屏重畫。
+//   接上實體手柄時虛擬手柄（連佈局鍵）隱藏，拔掉後重現。實體手柄全鍵都在（含十字鍵、右搖桿），按位置對應：下 = B、右 = A、左 = Y、上 = X（與 Switch 手柄的鍵位位置一致）。
 // Virtual gamepad (Nintendo button positions) + physical controllers (GameController). Both are merged and handed to the host through dm_input_set (hle_hid.c, bit layout in dm_input.h).
-//   Top corners: ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; top edge, centred: − and + side by side;
-//   bottom-left corner: the left stick (fixed ring, tilt measured from the ring centre, small dead zone); bottom-right corner: the A (right) B (bottom) X (top) Y (left) diamond, sliding a finger between keys switches keys.
-//   The virtual gamepad has no D-pad and no right stick, so each bottom corner holds a single control and it sits close in (reaching halfway into the side safe-area inset). Everything hugs the edges and corners to leave the picture room;
-//   controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, the stick only moves its knob, nothing redraws the whole screen.
-//   The virtual gamepad hides while a physical controller is connected and comes back when it is removed. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
+//   Two layouts; one tap on the layout button at the top centre (labelled with the current layout, "2D" / "3D") switches them, and the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_FULL).
+//   2D (simple): top corners ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; − and + side by side at the top centre; the left stick in the bottom-left corner (fixed ring, tilt measured from the ring centre, small dead zone);
+//     the A (right) B (bottom) X (top) Y (left) diamond in the bottom-right corner, sliding a finger between keys switches keys. Each bottom corner holds a single control, so it sits close in (reaching halfway into the side safe-area inset).
+//   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus a D-pad (inward of and below the left stick, 8-way), a right stick (inward of and below the diamond, a smaller ring)
+//     and L3 / R3 (small round keys in the top row, inward of ZL / ZR). Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
+//   Touch-down ownership: locked keys first (shoulders, − / +, the layout button, L3 / R3), then whichever of the diamond, the D-pad and the two sticks has the smallest distance / grab radius (the left stick's grab circle borders the D-pad).
+//   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
+//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <CoreText/CoreText.h>
 #include <pthread.h>
 #include "dm_input.h"
+#include "game_profile.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
-enum { C_NONE = 0, C_STICK, C_FACE, C_BTN };   // 觸點佔用的控件 | which control a touch holds
+enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP };   // 觸點佔用的控件 | which control a touch holds
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_touch_btn, g_pad_btn;
-static int32_t g_touch_lx, g_touch_ly, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry;
+static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry;
 static int tilted(int32_t x, int32_t y) { return (int64_t)x * x + (int64_t)y * y > (int64_t)4000 * 4000; }
 static void publish(void) {
     pthread_mutex_lock(&g_mu);
-    int32_t lx = g_touch_lx, ly = g_touch_ly;
+    int32_t lx = g_touch_lx, ly = g_touch_ly, rx = g_touch_rx, ry = g_touch_ry;
     if (tilted(g_pad_lx, g_pad_ly)) { lx = g_pad_lx; ly = g_pad_ly; }   // 實體搖桿推著時用實體的 | a tilted physical stick wins
-    dm_input_set(g_touch_btn | g_pad_btn, lx, ly, g_pad_rx, g_pad_ry);   // 右搖桿只有實體手柄有 | only a physical controller has a right stick
+    if (tilted(g_pad_rx, g_pad_ry)) { rx = g_pad_rx; ry = g_pad_ry; }
+    dm_input_set(g_touch_btn | g_pad_btn, lx, ly, rx, ry);
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -39,25 +47,35 @@ static const CGFloat
     K_CORNER_IN = 0.5,                              // 下角控件伸進側邊安全區的比例（橫屏時那裡只有屏幕圓角，靈動島在邊的正中） | how far the bottom-corner controls reach into the side safe-area inset (in landscape there is only the rounded screen corner there; the Dynamic Island is mid-edge)
     K_FACE_X = 81, K_PAD_Y = 82,                    // 菱形中心離外側；菱形、搖桿中心離底（B 鍵下沿離底約 5） | diamond centre from the outer edge; diamond and stick centre from the bottom (B's lower edge about 5 above it)
     K_FACE_GAP = 50, K_FACE_R = 27,                 // 菱形：鍵離中心、鍵半徑 | diamond: key distance from the centre, key radius
-    K_PILL_DX = 40, K_PILL_Y = 22, K_PILL_W = 50, K_PILL_H = 28,   // − / +：中心離屏幕中線、離頂，寬高 | − / +: centre from the screen's midline and from the top, size
+    K_PILL_DX = 52, K_PILL_Y = 22, K_PILL_W = 50, K_PILL_H = 28,   // − / +：中心離屏幕中線（中間讓給佈局鍵）、離頂，寬高 | − / +: centre from the screen's midline (the middle goes to the layout button) and from the top, size
+    K_SWAP_R = 15,                                  // 佈局鍵：頂邊正中，與 − / + 同高 | layout button: top centre, level with − / +
     K_STICK_X = 81, K_STICK_R = 77, K_KNOB_R = 30,  // 左搖桿：與菱形左右對稱，環和整個菱形一樣大（鍵距 + 鍵半徑），手柄頭比菱形的鍵略大 | left stick: mirrors the diamond, the ring as large as the whole diamond (key distance + key radius), the knob a little larger than a diamond key
-    K_STICK_GRAB = 1.4,                             // 按下點離環心多近算抓住搖桿（環半徑的倍數；左下角沒有別的控件和它搶） | how near the ring centre a touch-down grabs the stick (times the ring radius; nothing else in the bottom-left corner competes)
-    K_FULL = 0.8,                                   // 推到環半徑的這麼多就算推滿（約 62，原先小環是 50；手柄頭仍能走到環邊） | full tilt at this fraction of the ring radius (about 62; the former small ring had 50; the knob still travels to the ring edge)
-    K_DEAD = 0.1;                                   // 搖桿死區（環半徑的倍數） | stick dead zone (times the ring radius)
-static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS};
+    K_STICK_GRAB = 1.4,                             // 按下點離環心多近算抓住搖桿（環半徑的倍數） | how near the ring centre a touch-down grabs a stick (times the ring radius)
+    K_FULL = 0.8,                                   // 推到環半徑的這麼多就算推滿（手柄頭仍能走到環邊） | full tilt at this fraction of the ring radius (the knob still travels to the ring edge)
+    K_DEAD = 0.1,                                   // 搖桿死區（環半徑的倍數） | stick dead zone (times the ring radius)
+    // 3D 佈局另有的控件 | controls only the 3D layout has
+    K_LOW_X = 231, K_LOW_Y = 64,                    // 十字鍵 / 右搖桿中心離外側、離底（在左搖桿 / 菱形內側偏下，同 Pro 手柄） | D-pad / right stick centre from the outer edge and the bottom (inward of and below the left stick / the diamond, as on a Pro Controller)
+    K_DPAD_R = 48, K_ARM_W = 17, K_ARM_IN = 11,     // 十字鍵：箭頭外沿離中心、半寬、尖離中心 | D-pad: arm outer edge from the centre, half-width, tip from the centre
+    K_DPAD_GRAB = 1.3,                              // 十字鍵抓取半徑（外沿的倍數） | D-pad grab radius (times the outer edge)
+    K_RSTICK_R = 60, K_RKNOB_R = 24,                // 右搖桿：環、手柄頭半徑 | right stick: ring and knob radius
+    K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3：中心離外側（與 ZL / ZR 同高），半徑 | L3 / R3: centre from the outer edge (level with ZL / ZR), radius
+static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // 按下時鎖定的鍵（L3 / R3 只在 3D 佈局） | keys locked at touch-down (L3 / R3 only in the 3D layout)
+static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults：1 = 3D，0 = 2D | NSUserDefaults: 1 = 3D, 0 = 2D
 
 @interface DmGamepad : UIView
 @end
 static __weak DmGamepad *g_view;
 
 @implementation DmGamepad {
-    NSMapTable<UITouch *, NSNumber *> *_owner;     // 觸點 → 控件（C_BTN 時附帶鍵號，<< 8） | touch → control (with the key for C_BTN, << 8)
-    UITouch *_stick; CGPoint _stickNow;            // 握著左搖桿的觸點、它現在的位置 | the touch holding the left stick and where it is now
-    uint64_t _faceBits, _btnBits;
+    NSMapTable<UITouch *, NSNumber *> *_owner;     // 觸點 → 控件（C_BTN 附帶鍵號、C_STICK 附帶搖桿號，<< 8） | touch → control (with the key for C_BTN or the stick for C_STICK, << 8)
+    UITouch *_stick[2]; CGPoint _stickNow[2];      // 握著搖桿的觸點、它現在的位置（0 左 1 右） | the touch holding each stick and where it is now (0 left, 1 right)
+    uint64_t _faceBits, _dpadBits, _btnBits;
     NSMapTable<UITouch *, NSNumber *> *_faceOf;    // 每個落在菱形區的觸點各自按著哪些鍵 | which keys each touch on the diamond currently holds
-    CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // 每個鍵一層（搖桿按下、十字鍵只有實體手柄有，位空著） | one layer per key (stick clicks and the D-pad exist only on physical controllers; those stay empty)
-    CAShapeLayer *_ring, *_knob;
-    BOOL _stickShown;                              // 上次刷新時搖桿按著 | the stick was held at the last refresh
+    CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // 每個鍵一層 | one layer per key
+    CAShapeLayer *_ring[2], *_knob[2];
+    CAShapeLayer *_swap; CATextLayer *_swapLabel; BOOL _swapHeld;
+    BOOL _sticksShown;                             // 上次刷新時有搖桿按著 | a stick was held at the last refresh
+    BOOL _full;                                    // 當前是 3D 佈局 | the 3D layout is current
 }
 
 static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
@@ -72,6 +90,7 @@ static CATextLayer *label(CALayer *parent, NSString *s) {
     t.string = s; t.alignmentMode = kCAAlignmentCenter; t.foregroundColor = k_text.CGColor; t.contentsScale = UIScreen.mainScreen.scale;
     [parent addSublayer:t]; return t;
 }
+static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   // 只在 3D 佈局出現的鍵 | keys shown only in the 3D layout
 
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
@@ -83,22 +102,41 @@ static CATextLayer *label(CALayer *parent, NSString *s) {
             k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
             k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
         });
-        _ring = shape(self.layer); _ring.fillColor = k_ringFill.CGColor;
-        _knob = shape(self.layer);
-        CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // 手柄頭內圈 | inner ring of the knob
-        [_knob addSublayer:in];
-        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", nil, nil, @"L", @"R", @"ZL", @"ZR", @"+", @"−"};
-        for (int b = 0; b < B_N; b++) {
-            if (b == B_LS || b == B_RS || b >= B_LEFT) continue;
-            _key[b] = shape(self.layer);
-            if (names[b]) _label[b] = label(_key[b], names[b]);
+        for (int i = 0; i < 2; i++) {
+            _ring[i] = shape(self.layer); _ring[i].fillColor = k_ringFill.CGColor;
+            _knob[i] = shape(self.layer);
+            CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // 手柄頭內圈 | inner ring of the knob
+            [_knob[i] addSublayer:in];
         }
+        static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−"};
+        for (int b = 0; b < B_N; b++) {
+            _key[b] = shape(self.layer);
+            if (names[b]) _label[b] = label(_key[b], names[b]);   // 十字鍵的箭頭不帶字 | the D-pad arms carry no label
+        }
+        _swap = shape(self.layer); _swapLabel = label(_swap, @"");
+        NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
+        _full = saved ? saved.boolValue : DM_GAME_PAD_FULL;
+        [self applyLayout];
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidConnectNotification object:nil];
         [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidDisconnectNotification object:nil];
         [self padsChanged];
     }
     return self;
+}
+- (void)applyLayout {   // 按當前佈局顯示 / 隱藏控件 | show / hide the controls for the current layout
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    for (int b = 0; b < B_N; b++) _key[b].hidden = fullOnly(b) && !_full;
+    _ring[1].hidden = _knob[1].hidden = !_full;
+    _swapLabel.string = _full ? @"3D" : @"2D";
+    [CATransaction commit];
+}
+- (void)setFull:(BOOL)full {   // 換佈局：先鬆開所有觸點（不留按著的鍵），存下來，重排 | switch layouts: release every touch first (no key stays held), save, lay out again
+    if (full == _full) return;
+    [self reset];
+    _full = full;
+    [NSUserDefaults.standardUserDefaults setObject:@(full) forKey:k_layout_key];
+    [self applyLayout]; [self setNeedsLayout];
 }
 
 // ---- 佈局（點；按安全區內的矩形算） | Layout (points; computed inside the safe area) ----
@@ -111,33 +149,52 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
 - (CGFloat)faceR { return K_FACE_R * self.u; }
 - (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
     switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
-- (CGPoint)stickHome { CGRect s = self.corner; CGFloat u = self.u; return side(s, 0, K_STICK_X * u, CGRectGetMaxY(s) - K_PAD_Y * u); }
-- (CGFloat)stickR { return K_STICK_R * self.u; }
+- (CGPoint)stickHome:(int)i { CGRect s = self.corner; CGFloat u = self.u;
+    return i ? side(s, 1, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u) : side(s, 0, K_STICK_X * u, CGRectGetMaxY(s) - K_PAD_Y * u); }
+- (CGFloat)stickR:(int)i { return (i ? K_RSTICK_R : K_STICK_R) * self.u; }
+- (CGPoint)dpadCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 0, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u); }
+- (CGFloat)dpadR { return K_DPAD_R * self.u; }
 static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
+static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
 - (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
     return side(s, b == B_ZR || b == B_R, (z ? K_ZL_X : K_L_X) * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
 - (CGFloat)dropR:(int)b { return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
+- (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; return side(s, b == B_RS, K_CLICK_X * u, CGRectGetMinY(s) + K_ZL_Y * u); }
 - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
     CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + K_PILL_Y * u);   // − 在左、+ 在右 | − on the left, + on the right
     return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
+- (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + K_PILL_Y * self.u); }
 
 static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); }
-- (int)btnAt:(CGPoint)p {   // 肩鍵與 − / +（只在按下時判，之後鎖定） | shoulders and − / + (tested on touch-down only, then locked)
+- (int)btnAt:(CGPoint)p {   // 鎖定的鍵（只在按下時判，之後鎖定） | locked keys (tested on touch-down only, then locked)
     CGFloat u = self.u;
-    for (int i = 0; i < 6; i++) { int b = k_btns[i];
-        if (isDrop(b) ? dist(p, [self dropCenter:b]) <= [self dropR:b] * 1.35 : CGRectContainsPoint(CGRectInset([self pillRect:b], -8 * u, -8 * u), p)) return b; }
+    for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
+        if (fullOnly(b) && !_full) continue;
+        BOOL hit = isDrop(b) ? dist(p, [self dropCenter:b]) <= [self dropR:b] * 1.35
+                 : isClick(b) ? dist(p, [self clickCenter:b]) <= K_CLICK_R * u * 1.35
+                 : CGRectContainsPoint(CGRectInset([self pillRect:b], -8 * u, -8 * u), p);
+        if (hit) return b; }
     return -1;
 }
+- (BOOL)inSwap:(CGPoint)p { return dist(p, self.swapCenter) <= K_SWAP_R * self.u * 1.6; }
 - (uint64_t)faceAt:(CGPoint)p {   // 菱形區裡手指下的鍵（兩鍵之間可同時按） | keys under the finger in the diamond (between two keys both count)
     uint64_t m = 0; CGFloat r = self.faceR * 1.25;
     for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= r) m |= 1ull << b;
     return m;
 }
-- (BOOL)inFace:(CGPoint)p { return dist(p, self.faceCenter) <= self.faceGap + self.faceR * 1.6; }
-- (BOOL)inStick:(CGPoint)p { return dist(p, self.stickHome) <= self.stickR * K_STICK_GRAB; }
-- (CGPoint)knobOffset {   // 手柄頭偏離環心（限在環內） | knob offset from the ring centre (clamped to the ring)
-    if (!_stick) return CGPointZero;
-    CGPoint h = self.stickHome; CGFloat dx = _stickNow.x - h.x, dy = _stickNow.y - h.y, d = hypot(dx, dy), R = self.stickR;
+- (uint64_t)dpadAt:(CGPoint)p {   // 8 向：每向 45°，斜向按兩鍵；中心小圈不算 | 8 directions: 45° each, diagonals press two keys; a small centre circle counts as none
+    CGPoint c = self.dpadCenter; CGFloat dx = p.x - c.x, dy = p.y - c.y;
+    if (hypot(dx, dy) < self.dpadR * 0.25) return 0;
+    double a = atan2(-dy, dx) * 180 / M_PI; uint64_t m = 0;
+    if (a > -67.5 && a < 67.5) m |= 1ull << B_RIGHT;
+    if (a > 22.5 && a < 157.5) m |= 1ull << B_UP;
+    if (a > 112.5 || a < -112.5) m |= 1ull << B_LEFT;
+    if (a < -22.5 && a > -157.5) m |= 1ull << B_DOWN;
+    return m;
+}
+- (CGPoint)knobOffset:(int)i {   // 手柄頭偏離環心（限在環內） | knob offset from the ring centre (clamped to the ring)
+    if (!_stick[i]) return CGPointZero;
+    CGPoint h = [self stickHome:i]; CGFloat dx = _stickNow[i].x - h.x, dy = _stickNow[i].y - h.y, d = hypot(dx, dy), R = [self stickR:i];
     if (d > R) { dx *= R / d; dy *= R / d; }
     return CGPointMake(dx, dy);
 }
@@ -145,48 +202,65 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 // ---- 觸摸 | Touch ----
 - (void)recompute {
     uint64_t face = 0; for (UITouch *t in _faceOf) face |= [_faceOf objectForKey:t].unsignedLongLongValue;
-    uint64_t btn = 0;
-    for (UITouch *t in _owner) { uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; if ((v & 0xff) == C_BTN) btn |= 1ull << (v >> 8); }
-    int32_t ax = 0, ay = 0;
-    CGPoint o = self.knobOffset; CGFloat R = self.stickR, d = hypot(o.x, o.y), dz = R * K_DEAD;
-    if (d > dz) {
+    uint64_t btn = 0, dpad = 0; BOOL swap = NO;
+    for (UITouch *t in _owner) { uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff);
+        if (c == C_BTN) btn |= 1ull << (v >> 8);
+        else if (c == C_DPAD) dpad |= [self dpadAt:[t locationInView:self]];
+        else if (c == C_SWAP) swap = YES; }
+    int32_t ax[4] = {0};
+    for (int i = 0; i < 2; i++) {
+        CGPoint o = [self knobOffset:i]; CGFloat R = [self stickR:i], d = hypot(o.x, o.y), dz = R * K_DEAD;
+        if (d <= dz) continue;
         CGFloat m = fmin((d - dz) / (R * K_FULL - dz), 1) / d;   // 死區外從 0 起算，到推滿處為滿 | outside the dead zone: 0 rising to full at the full-tilt radius
-        ax = (int32_t)lrint(o.x * m * 32767); ay = (int32_t)lrint(-o.y * m * 32767);   // 宿主：上為正；四捨五入，推滿正好是 32767 | host: up is positive; rounded so full tilt is exactly 32767
+        ax[i * 2] = (int32_t)lrint(o.x * m * 32767); ax[i * 2 + 1] = (int32_t)lrint(-o.y * m * 32767);   // 宿主：上為正；四捨五入，推滿正好是 32767 | host: up is positive; rounded so full tilt is exactly 32767
     }
-    BOOL changed = face != _faceBits || btn != _btnBits;
-    _faceBits = face; _btnBits = btn;
+    BOOL changed = face != _faceBits || dpad != _dpadBits || btn != _btnBits || swap != _swapHeld;
+    _faceBits = face; _dpadBits = dpad; _btnBits = btn; _swapHeld = swap;
     pthread_mutex_lock(&g_mu);
-    g_touch_btn = face | btn; g_touch_lx = ax; g_touch_ly = ay;
+    g_touch_btn = face | dpad | btn; g_touch_lx = ax[0]; g_touch_ly = ax[1]; g_touch_rx = ax[2]; g_touch_ry = ax[3];
     pthread_mutex_unlock(&g_mu);
     publish();
-    BOOL held = _stick != nil;
-    if (changed || held || _stickShown) [self refresh];   // 鬆開搖桿那次也要刷，手柄頭才回中 | also refresh on the stick release so the knob returns to the centre
-    _stickShown = held;
+    BOOL sticks = _stick[0] || _stick[1];
+    if (changed || sticks || _sticksShown) [self refresh];   // 鬆開搖桿那次也要刷，手柄頭才回中 | also refresh on the stick release so the knob returns to the centre
+    _sticksShown = sticks;
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     for (UITouch *t in ts) {
         CGPoint p = [t locationInView:self]; int hit = [self btnAt:p];
-        if (hit >= 0) [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t];
-        else if ([self inFace:p]) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
-        else if (!_stick && [self inStick:p]) { [_owner setObject:@(C_STICK) forKey:t]; _stick = t; _stickNow = p; }
+        if (hit >= 0) { [_owner setObject:@(C_BTN | (uint64_t)hit << 8) forKey:t]; continue; }
+        if ([self inSwap:p]) { [_owner setObject:@(C_SWAP) forKey:t]; continue; }
+        // 菱形、十字鍵、兩個搖桿：取「距離 / 抓取半徑」最小且 ≤ 1 的那個 | diamond, D-pad, the two sticks: take the one with the smallest distance / grab radius, if it is <= 1
+        CGFloat best = 1; int kind = C_NONE, idx = 0;
+        CGFloat f = dist(p, self.faceCenter) / (self.faceGap + self.faceR * 1.6); if (f <= best) { best = f; kind = C_FACE; }
+        if (_full) { CGFloat d = dist(p, self.dpadCenter) / (self.dpadR * K_DPAD_GRAB); if (d < best) { best = d; kind = C_DPAD; } }
+        for (int i = 0; i < (_full ? 2 : 1); i++) if (!_stick[i]) {
+            CGFloat s = dist(p, [self stickHome:i]) / ([self stickR:i] * K_STICK_GRAB); if (s < best) { best = s; kind = C_STICK; idx = i; } }
+        if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
+        else if (kind == C_DPAD) [_owner setObject:@(C_DPAD) forKey:t];
+        else if (kind == C_STICK) { [_owner setObject:@(C_STICK | (uint64_t)idx << 8) forKey:t]; _stick[idx] = t; _stickNow[idx] = p; }
     }
     [self recompute];
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
     for (UITouch *t in ts) {
-        int c = (int)([_owner objectForKey:t].unsignedLongLongValue & 0xff); CGPoint p = [t locationInView:self];
+        uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
         if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
-        else if (c == C_STICK) _stickNow = p;
+        else if (c == C_STICK) _stickNow[v >> 8] = p;
     }
     [self recompute];
 }
-- (void)endTouches:(NSSet<UITouch *> *)ts {
-    for (UITouch *t in ts) { [_owner removeObjectForKey:t]; [_faceOf removeObjectForKey:t]; if (t == _stick) _stick = nil; }
+- (void)endTouches:(NSSet<UITouch *> *)ts tapped:(BOOL)ended {
+    BOOL swap = NO;
+    for (UITouch *t in ts) {
+        if (ended && ([_owner objectForKey:t].unsignedLongLongValue & 0xff) == C_SWAP && [self inSwap:[t locationInView:self]]) swap = YES;   // 佈局鍵：在鍵上鬆手才算 | layout button: counts only when released on the button
+        [_owner removeObjectForKey:t]; [_faceOf removeObjectForKey:t]; for (int i = 0; i < 2; i++) if (t == _stick[i]) _stick[i] = nil;
+    }
     [self recompute];
+    if (swap) [self setFull:!_full];
 }
-- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts]; }
-- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts]; }
-- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick = nil; [self recompute]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
+- (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; [self recompute]; }
 
 // ---- 形狀 | Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
@@ -198,6 +272,15 @@ static CGPathRef dropPath(CGPoint c, CGFloat r, CGFloat tipAngle, CGFloat round)
     CGPathMoveToPoint(p, NULL, p2.x, p2.y);
     CGPathAddArcToPoint(p, NULL, tip.x, tip.y, p1.x, p1.y, round);
     CGPathAddArc(p, NULL, c.x, c.y, r, tipAngle + th, tipAngle - th + 2 * M_PI, false);
+    CGPathCloseSubpath(p); return p;
+}
+static CGPathRef armPath(CGPoint c, CGFloat R, CGFloat w, CGFloat in, CGFloat angle, CGFloat round) {   // 十字鍵一臂：朝上的五邊形（尖朝中心）繞中心轉 angle | one D-pad arm: an upward pentagon (tip toward the centre) rotated by angle around the centre
+    CGPoint v[5] = {{-w, -R}, {w, -R}, {w, -(in + w)}, {0, -in}, {-w, -(in + w)}};
+    CGFloat cs = cos(angle), sn = sin(angle);
+    for (int i = 0; i < 5; i++) v[i] = CGPointMake(c.x + v[i].x * cs - v[i].y * sn, c.y + v[i].x * sn + v[i].y * cs);
+    CGMutablePathRef p = CGPathCreateMutable();
+    CGPathMoveToPoint(p, NULL, (v[4].x + v[0].x) / 2, (v[4].y + v[0].y) / 2);
+    for (int i = 0; i < 5; i++) CGPathAddArcToPoint(p, NULL, v[i].x, v[i].y, v[(i + 1) % 5].x, v[(i + 1) % 5].y, round);
     CGPathCloseSubpath(p); return p;
 }
 static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
@@ -214,31 +297,41 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     CGFloat u = self.u;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
-    for (int i = 0; i < 6; i++) { int b = k_btns[i];
+    for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (isDrop(b)) {
             BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
             setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // 尖朝同側上角 | tip toward the near top corner
+        } else if (isClick(b)) {
+            CGPoint c = [self clickCenter:b]; setPath(_key[b], circlePath(c, K_CLICK_R * u)); placeLabel(_label[b], c, 13 * u);
         } else {
             CGRect rc = [self pillRect:b];
             setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL)); placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
         }
     }
-    setPath(_ring, circlePath(self.stickHome, self.stickR));
-    CGFloat k = K_KNOB_R * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
-    setPath(_knob, circlePath(CGPointMake(k, k), k));
-    CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
-    in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
+    static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // 同一臂轉 90° 一步 | the same arm in 90° steps
+    for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
+    CGPoint sc = self.swapCenter; setPath(_swap, circlePath(sc, K_SWAP_R * u)); placeLabel(_swapLabel, sc, 12 * u);
+    for (int i = 0; i < 2; i++) {
+        setPath(_ring[i], circlePath([self stickHome:i], [self stickR:i]));
+        CGFloat k = (i ? K_RKNOB_R : K_KNOB_R) * u; _knob[i].bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+        setPath(_knob[i], circlePath(CGPointMake(k, k), k));
+        CAShapeLayer *in = (CAShapeLayer *)_knob[i].sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
+        in.frame = _knob[i].bounds; in.path = ip; CGPathRelease(ip);
+    }
     [CATransaction commit];
     [self refresh];
 }
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; [self setNeedsLayout]; }
 - (void)refresh {   // 按下狀態 → 填色，搖桿 → 手柄頭位置 | pressed state → fill, sticks → knob position
-    uint64_t all = _faceBits | _btnBits;
+    uint64_t all = _faceBits | _dpadBits | _btnBits;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    for (int b = 0; b < B_N; b++) if (_key[b]) { BOOL on = (all >> b) & 1;
+    for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
         _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
-    CGPoint h = self.stickHome, o = self.knobOffset;
-    _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick ? k_on : k_idle).CGColor;
+    _swap.fillColor = (_swapHeld ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
+    for (int i = 0; i < 2; i++) {
+        CGPoint h = [self stickHome:i], o = [self knobOffset:i];
+        _knob[i].position = CGPointMake(h.x + o.x, h.y + o.y); _knob[i].fillColor = (_stick[i] ? k_on : k_idle).CGColor;
+    }
     [CATransaction commit];
 }
 
