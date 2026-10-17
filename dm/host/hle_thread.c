@@ -48,7 +48,11 @@ typedef struct thr {
     // 當前等待：kind 0=無 1=鎖 2=條件 3=地址 4=同步對象
     // Current wait: kind 0=none 1=lock 2=condition 3=address 4=synchronization object
     int wkind, woke; uint64_t waddr, wkey; uint32_t wtag; int64_t wres;
-    uint64_t wseq;             // 登記等待的先後序號：同優先級先到先醒（與 Horizon 內核 KThread 等待樹同序） | Sequence number of wait registration: at equal priority first come, first woken (same order as the Horizon kernel's KThread wait tree)
+    _Atomic int sleeping;      // 在 SleepThread 的定時睡眠裡（不算可運行，dm_yield_to_core_peers 用） | inside SleepThread's timed sleep (not runnable; used by dm_yield_to_core_peers)
+    int yield_pending;         // 這次 SVC 叫醒了釘在本核、優先級更高的線程：SVC 返回前讓它們先跑（svc_thread） | this SVC woke a higher-priority thread pinned to this core: let it run before the SVC returns (svc_thread)
+    _Atomic int *host_work;    // 指向該線程的 dm_host_work（線程起來時登記） | points at the thread's dm_host_work (registered when the thread starts)
+    int host_owned;            // 宿主自己建的客體線程（dm_guest_thread_spawn）：在宿主代碼裡等，不算遊戲的線程 | a guest thread the host created itself (dm_guest_thread_spawn): it waits in host code and is not one of the game's threads
+    uint64_t wseq;            // 登記等待的先後序號：同優先級先到先醒（與 Horizon 內核 KThread 等待樹同序） | Sequence number of wait registration: at equal priority first come, first woken (same order as the Horizon kernel's KThread wait tree)
     struct thr *next;          // 等待鏈 | Wait chain
     struct thr *all;           // 全部線程鏈（現場導出用） | All-threads chain (for the state dump)
     int last_svc; uint64_t last_lr;
@@ -66,6 +70,8 @@ typedef struct thr {
     pthread_cond_t pcv;
 } thr_t;
 static thr_t *g_all;
+extern __thread _Atomic int dm_host_work;   // hle.h 同聲明；定義在 hle_nvn.c | declared in hle.h too; defined in hle_nvn.c
+static _Atomic uint64_t g_preempt_n, g_preempt_ns, g_preempt_cap;   // 同核搶佔讓步：次數、總等待、到上限（svc_thread） | same-core preemption yields: count, total wait, cap hits (svc_thread)
 
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
 #define MAX_H 4096
@@ -94,6 +100,42 @@ static thr_t *cur(void) {
     if (!t) die("非客體線程調用了線程 SVC");
     return t;
 }
+// 讓同核更高優先級的線程先跑完：Horizon 按核調度，一個線程發的信號叫醒了釘在同核、優先級更高的線程時，後者立即搶佔、跑到再次阻塞，發信號的線程才接著走。
+// 有的遊戲把這當成同步用：銀河戰士 生存恐懼的影片播放器，主線程（優先級 44，核 0）把「拆解碼器」請求投給分發線程與工作線程（優先級 30，只許核 0）後不等就釋放對象、
+// 再在同一塊內存上建下一個；宿主上各線程真並行，分發線程還掛著舊等待項、工作線程隊裡還有舊對象，於是 SignalEvent 進空 MultiWait、工作線程讀已釋放對象。
+// svc_thread 在叫醒這類線程的 SVC 之後調它：等到「只許本核、優先級更高、已啓動未退出、不是宿主自建」的線程都在等待或睡眠，最多 max_us；返回 −1 = 超時（上游 a9c56fd）
+// Let higher-priority threads of the same core run first: Horizon schedules per core, and when a signal from one thread wakes a higher-priority thread pinned to the same core, that thread preempts at once and runs until it blocks again before the signalling thread continues.
+// Some games rely on this as synchronization: in Metroid Dread's movie player the main thread (priority 44, core 0) posts "tear down the decoder" to the dispatcher and worker threads (priority 30, core 0 only), then frees the object without waiting
+// and builds the next one in the same memory; on the host the threads truly run in parallel, the dispatcher still had the old holders linked and the worker still had the old object queued, so SignalEvent hit a null MultiWait and the worker read a freed object.
+// svc_thread calls it after an SVC that woke such a thread: it waits until every started, unexited, not host-created thread allowed only on this core with a higher priority is waiting or sleeping, for at most max_us; returns −1 on timeout (upstream a9c56fd)
+void dm_thread_mark_host(void) { thr_t *t = pthread_getspecific(g_keythr); if (t) t->host_owned = 1; }
+// 線程是否真在跑：客體等待 / 定時睡眠之外，還可能在宿主代碼裡阻塞（HLE 裡等宿主條件變量、GPU、文件），那時沒有客體等待種類；問內核線程狀態才準
+// Whether a thread is really running: besides guest waits / timed sleeps it may be blocked in host code (an HLE call waiting on a host condition variable, the GPU, a file), which has no guest wait kind; only the kernel's thread state tells
+static int thr_running(const thr_t *t) {
+    if (t->wkind || t->sleeping || !t->mport || (t->host_work && *t->host_work)) return 0;
+    thread_basic_info_data_t bi; mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
+    if (thread_info(t->mport, THREAD_BASIC_INFO, (thread_info_t)&bi, &n) != KERN_SUCCESS) return 0;
+    return bi.run_state == TH_STATE_RUNNING;
+}
+int dm_yield_to_core_peers(unsigned max_us) {
+    thr_t *self = pthread_getspecific(g_keythr); if (!self) return 0;
+    uint64_t bit = 1ull << (self->core & 63), t0 = now_ns(); int waited = 0;
+    for (;;) {
+        thr_t *busy = NULL;
+        pthread_mutex_lock(&G);
+        for (thr_t *t = g_all; t && !busy; t = t->all)
+            if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_running(t)) busy = t;
+        uint32_t bh = busy ? busy->handle : 0; int bp = busy ? busy->prio : 0; uint64_t blr = busy ? busy->last_lr : 0; int bsvc = busy ? busy->last_svc : 0;
+        pthread_mutex_unlock(&G);
+        if (!busy) return waited;
+        if (now_ns() - t0 > (uint64_t)max_us * 1000) {
+            static _Atomic int nlog; if (nlog++ < 8) { module_t *m = module_of((void *)blr);   // 前幾次到上限記下雙方：誰在等、誰一直在跑 | the first few cap hits: who waits, who keeps running
+                LOG("同核搶佔讓步到上限：線程 %#x（優先級 %d 核 %d）等 %#x（優先級 %d，最近 svc %#x lr=%s+%#llx）", self->handle, self->prio, self->core, bh, bp, bsvc, m ? m->name : "?", (unsigned long long)(m ? blr - (uint64_t)m->base : blr)); }
+            return -1;
+        }
+        { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); } waited = 1;
+    }
+}
 
 // ---------- 等待原語（持 G 調用）----------
 // ---------- Wait primitives (called holding G) ----------
@@ -112,7 +154,11 @@ static thr_t *pick(int kind, uint64_t a) {
     }
     return b;
 }
-static void wake(thr_t *t, int64_t res) { wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv); }
+static void wake(thr_t *t, int64_t res) {
+    wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
+    thr_t *self = pthread_getspecific(g_keythr);   // 叫醒的是釘在本核、優先級更高的線程：Horizon 上它立即搶佔（見 dm_yield_to_core_peers） | the woken thread is pinned to this core with a higher priority: on Horizon it preempts at once (see dm_yield_to_core_peers)
+    if (self && self != t && !t->host_owned && t->prio < self->prio && t->mask == 1ull << (self->core & 63)) self->yield_pending = 1;
+}
 // 掛起直到被喚醒或超時（ns<0 無限、0 立即超時）；返回 wres 或 R_TIMEOUT
 // Suspend until woken or timed out (ns<0 infinite, 0 immediate timeout); returns wres or R_TIMEOUT
 static int64_t block_inner(thr_t *t, int kind, int64_t ns);
@@ -184,7 +230,7 @@ static void *thread_main(void *p) {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;
-    t->mport = pthread_mach_thread_np(pthread_self());
+    t->mport = pthread_mach_thread_np(pthread_self()); t->host_work = &dm_host_work;
     crash_thread_init();
     guest_thread_init();
     pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); pthread_mutex_unlock(&G);
@@ -281,7 +327,7 @@ uint32_t svc_thread_main_init(void) {
     pause_install();
     thr_t *t = calloc(1, sizeof *t);
     pthread_cond_init(&t->cv, NULL); pthread_cond_init(&t->pcv, NULL);
-    t->started = 1; t->prio = 44; t->core = 0; t->mask = 7; t->pt = pthread_self(); t->mport = pthread_mach_thread_np(t->pt);
+    t->started = 1; t->prio = 44; t->core = 0; t->mask = 7; t->pt = pthread_self(); t->mport = pthread_mach_thread_np(t->pt); t->host_work = &dm_host_work;
     pthread_mutex_lock(&G); t->handle = h_new(O_THREAD, t); t->id = g_next_id++; t->all = g_all; g_all = t; pthread_mutex_unlock(&G);
     pthread_setspecific(g_keythr, t);
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
@@ -454,6 +500,7 @@ void svc_thread_dump(void) {
     static const char *kinds[] = {"運行/未在等", "鎖", "條件變量", "地址", "同步對象"};
     int nh = 0; for (int i = 1; i < MAX_H; i++) nh += g_h[i].type != O_FREE;
     fprintf(stderr, "[dm] 句柄表佔用 %d / %d，累計建線程 %llu\n", nh, MAX_H, g_next_id - 0x51);
+    fprintf(stderr, "[dm] 同核搶佔讓步 %llu 次，共 %.1f ms，到上限 %llu 次\n", (unsigned long long)g_preempt_n, g_preempt_ns / 1e6, (unsigned long long)g_preempt_cap);
     for (thr_t *t = g_all; t; t = t->all) {
         module_t *m = module_of((void *)t->last_lr);
         // 線程名：SDK ThreadType+0x1a0 是名字指針（ThreadManager::SetInitialThreadNameUnsafe 0x34a2a4）；CreateThread 的 x2 = ThreadType*
@@ -522,7 +569,31 @@ static void sleep_precise(uint64_t dl) {
         struct timespec ts = {(time_t)(s / 1000000000u), (long)(s % 1000000000u)}; nanosleep(&ts, 0);
     }
 }
+// 同核搶佔的近似：一次 SVC 叫醒了釘在本核、優先級更高的線程，就在 SVC 返回前等它們（連同本核其餘更高優先級線程）阻塞，最多 5 ms。
+// 銀河戰士 生存恐懼的影片播放器靠它：主線程把「摘等待項」請求投給分發線程（優先級 30，只許核 0）、給工作線程留了消息，隨即釋放對象並在原處建新對象；
+// 真機上分發 / 工作線程在主線程發信號時立即搶佔、處理完才輪到主線程，宿主上不等就有舊等待項被重新初始化、工作線程讀已釋放對象（SignalEvent 進空 MultiWait 崩、main+0x225338 崩）。
+// 按遊戲檔案 core_preempt 開（缺省關：馬力歐的讀盤線程會等忙著解壓的高優先級線程，首幀從 0.6 s 推到 2.9 s）；DM_PREEMPT=0 / 1 蓋過檔案。計數在線程現場導出裡（上游 a9c56fd）
+// An approximation of same-core preemption: when an SVC woke a higher-priority thread pinned to this core, wait before the SVC returns until those threads (and every other higher-priority thread of this core) block, for at most 5 ms.
+// Metroid Dread's movie player relies on it: the main thread posts "unlink the holders" to the dispatcher thread (priority 30, core 0 only) and leaves messages for the worker thread, then frees the object and builds a new one in its place;
+// on hardware the dispatcher / worker preempt the main thread as soon as it signals and finish first, while on the host, without the wait, old holders got re-initialized and the worker read freed objects (crashes in SignalEvent on a null MultiWait and at main+0x225338).
+// On per the game profile's core_preempt (off by default: Mario's loader threads would wait for busy high-priority decompression threads, pushing its first frame from 0.6 s to 2.9 s); DM_PREEMPT=0 / 1 overrides the profile. Counts are in the thread state dump (upstream a9c56fd)
+static int svc_thread_impl(int num, uint64_t *regs);
 int svc_thread(int num, uint64_t *regs) {
+    int r = svc_thread_impl(num, regs);
+    thr_t *me = pthread_getspecific(g_keythr);
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_PREEMPT"); on = e ? atoi(e) != 0 : DM_GAME_CORE_PREEMPT; }
+    // 不只「這次叫醒了誰」：同核更高優先級線程本就在跑時（發信號時它正忙、沒在等），真機上調用線程也根本輪不到 CPU。
+    // 銀河戰士 生存恐懼：分發線程正忙時主線程投「摘等待項」請求不叫醒任何人，隨即釋放對象，分發線程稍後在 WaitAny 裡走到已釋放的等待項崩
+    // Not only "whom did this SVC wake": when a higher-priority thread of the same core is already running (busy, not waiting, at the time of the signal), on hardware the calling thread does not get the CPU at all.
+    // Metroid Dread: with the dispatcher thread busy, the main thread's "unlink the holders" request woke nobody, the object was freed right away, and the dispatcher later walked the freed holders in WaitAny and crashed
+    if (me && on) {
+        uint64_t t0 = now_ns(); int w = dm_yield_to_core_peers(5000);
+        if (w) { if (w < 0) g_preempt_cap++; g_preempt_n++; g_preempt_ns += now_ns() - t0; }
+    }
+    if (me) me->yield_pending = 0;
+    return r;
+}
+static int svc_thread_impl(int num, uint64_t *regs) {
     { thr_t *me = pthread_getspecific(g_keythr); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->nsvc++; } }
     if (g_flag.thr && num != 0x0B) { thr_t *me = pthread_getspecific(g_keythr); LOG("[%#x] svc %#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx", me ? me->handle : 0, num, regs[0], regs[1], regs[2], regs[3]); }
     switch (num) {
@@ -558,7 +629,7 @@ int svc_thread(int num, uint64_t *regs) {
         if (ns > 0 && dm_detclock_enabled()) {
             uint64_t deadline = guest_ns() + (uint64_t)ns;
             while (guest_ns() < deadline) { struct timespec ts = {0, 1000000}; nanosleep(&ts, 0); }
-        } else if (ns > 0) sleep_precise(now_ns() + (uint64_t)ns);
+        } else if (ns > 0) { thr_t *me = pthread_getspecific(g_keythr); if (me) me->sleeping = 1; sleep_precise(now_ns() + (uint64_t)ns); if (me) me->sleeping = 0; }
         else {   // 讓出（0 / -1 / -2）。主線程的讓出次數與耗時記賬：遊戲渲染任務圖「等全部做完」是純輪詢 + 讓出（main+0x15ee898），量它佔一幀多少 | Yield (0 / -1 / -2). Count and time of the main thread's yields are recorded: the game's render task graph "wait for everything to finish" is pure polling + yield (main+0x15ee898); measure how much of a frame it takes
             thr_t *me = pthread_getspecific(g_keythr);
             if (me && me->handle == 0x1001) { uint64_t y0 = now_ns(); sched_yield(); g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }

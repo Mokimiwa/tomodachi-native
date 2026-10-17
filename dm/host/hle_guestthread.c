@@ -14,7 +14,12 @@
 typedef int (*create_fn)(void *tt, void (*fn)(void *), void *arg, void *stack, size_t size, int prio);
 typedef void (*tt_fn)(void *tt);
 static void *need(const char *n) { void *p = guest_sym(n); if (!p) die("宿主客體線程：缺符號 %s", n); return p; }
+// 線程入口墊一層：先登記為宿主自建（hle_thread.c dm_yield_to_core_peers 不等它們），再進 fn | an entry shim: first register the thread as host-created (hle_thread.c dm_yield_to_core_peers does not wait for them), then run fn
+typedef struct { void (*fn)(void *); void *arg; } spawn_arg;
+void dm_thread_mark_host(void);
+static void spawn_tramp(void *p) { spawn_arg a = *(spawn_arg *)p; free(p); dm_thread_mark_host(); a.fn(a.arg); }
 void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t stack_size) {
+    spawn_arg *sa = malloc(sizeof *sa); if (!sa) die("宿主客體線程：分配失敗"); sa->fn = fn; sa->arg = arg; fn = spawn_tramp; arg = sa;
     stack_size = (stack_size + 0xfff) & ~(size_t)0xfff;
     void *tt = calloc(1, 0x200);                                 // nn::os::ThreadType（0x1c0 字節，留餘量） | nn::os::ThreadType (0x1c0 bytes, with headroom)
     void *stack = aligned_alloc(0x1000, stack_size);              // SDK 要求棧 4 KiB 對齊、大小 4 KiB 整數倍 | the SDK requires the stack to be 4 KiB aligned and its size a multiple of 4 KiB

@@ -13,3 +13,4 @@ void dm_prof_add(int id, uint64_t ns, uint64_t bytes) { (void)id; (void)ns; (voi
 uint64_t now_ns(void) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb); return mach_absolute_time() * tb.numer / tb.denom; }
 uint64_t guest_ns(void) { return now_ns(); }
 int dm_detclock_enabled(void) { return 0; }
+__thread _Atomic int dm_host_work;   // hle_thread.c 引用；宿主裡定義在 hle_nvn.c | referenced by hle_thread.c; in the host it is defined in hle_nvn.c
