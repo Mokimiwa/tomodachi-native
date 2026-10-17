@@ -1,6 +1,10 @@
 // 真實NVN錄製入口→生產Metal回放；8x6各mip獨立手算，未設置viewport不借顯式viewport規避。
 // Real NVN recording entry → production Metal replay; each mip of 8x6 is hand-calculated independently; with no viewport set, an explicit viewport is not used to dodge it.
+// nvn_mtl.m 的 nvn_game_fps 是弱定義缺省值，hle_nvn.c 給強定義；同一編譯單元裡把弱的那份改名（同 t_present_crop.m，上游 c7e5b57）
+// nvn_mtl.m's nvn_game_fps is a weak default and hle_nvn.c gives the strong definition; in one translation unit the weak one is renamed (as in t_present_crop.m, upstream c7e5b57)
+#define nvn_game_fps nvn_game_fps_mtl_default
 #include "../nvn/nvn_mtl.m"
+#undef nvn_game_fps
 #include "../nvn/hle_nvn.c"
 uint64_t g_t0_ns;   // 宿主 main.c 的進程起點（hle_nvn 逐幀 @t_s 用），單測替身 | process start time from host main.c (used by hle_nvn's per-frame @t_s); unit test stub
 void *front_metal_layer(void) { return NULL; }

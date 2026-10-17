@@ -957,6 +957,7 @@ static const char *const g_nops[] = {
     "nvnCommandBufferPushDebugGroupDynamic",
     "nvnCommandBufferPopDebugGroup",
     "nvnCommandBufferInsertDebugMarkerDynamic",
+    "nvnCommandBufferInsertDebugMarker",   // 十三機兵防衛圈 | 13 Sentinels
     "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
 };
@@ -1242,9 +1243,14 @@ static void sleep_until_ns(uint64_t dl) {   // 單調時鐘上的絕對時刻 | 
 static int g_hz = -1, g_display_mode;
 static _Atomic int g_game_itv = 1;   // 按遊戲間隔出幀時，遊戲此刻設的出圖間隔（game 模式下 2 = 30 幀，nvn_game_fps 報給圖形層定顯示節拍） | when pacing by the game's interval, the interval the game currently sets (in game mode 2 = 30 fps; nvn_game_fps reports it to the graphics layer, which sets the display link from it)
 void nvn_present_config(int hz, int display_mode) { g_hz = hz; g_display_mode = display_mode; }
-// 遊戲自己要的幀數：game 模式且出圖間隔 ≥ 2 時 30（顯示節拍隨之 30 Hz，mtl_fps_target），否則 60。間隔 3 以上（20 幀以下）沒有對應的節拍檔，按 30 走
-// The frame rate the game itself asks for: 30 in game mode with a present interval >= 2 (the display link follows at 30 Hz, mtl_fps_target), otherwise 60. Intervals of 3 or more (20 fps or less) have no matching display-link mode and run at 30
-int nvn_game_fps(void) { return g_hz > 0 && !g_display_mode && atomic_load(&g_game_itv) >= 2 ? 30 : 60; }
+static _Atomic uint64_t g_itv2_since;   // 遊戲這一段連續設間隔 ≥ 2 的起點（now_ns；0 = 此刻是 1） | start of the game's current run of intervals >= 2 (now_ns; 0 = it is 1 now)
+// 遊戲自己要的幀數：game 模式且出圖間隔 ≥ 2 持續滿 1 秒時 30（顯示節拍隨之 30 Hz，mtl_fps_target），否則 60；間隔回到 1 立即 60。間隔 3 以上（20 幀以下）沒有對應的節拍檔，按 30 走。
+// 要持續 1 秒：馬力歐 1.2.1 按上一幀的耗時動態選間隔（main+0xcfd24），一幀慢了下一幀設 2、再設回 1（iPhone 兩分鐘 123 次）。逐幀跟著切顯示節拍檔會來回抖；
+//   單幀的間隔 2 由顯示節拍那邊按這一幀的週期多留一拍（nvn_mtl.m 節拍回調），不靠切檔（上游 c7e5b57）
+// The frame rate the game itself asks for: 30 in game mode when the present interval has been >= 2 for a full second (the display link follows at 30 Hz, mtl_fps_target), otherwise 60; back to 60 at once when the interval returns to 1. Intervals of 3 or more (20 fps or less) have no matching display-link mode and run at 30.
+// The one-second hold: Mario 1.2.1 picks the interval from the previous frame's time (main+0xcfd24), setting 2 for the frame after a slow one and then 1 again (123 times in two minutes on an iPhone). Following that frame by frame would flap the display-link mode;
+//   a single interval-2 frame is instead kept on screen for its own period by the display-link callback (nvn_mtl.m), without changing the mode (upstream c7e5b57)
+int nvn_game_fps(void) { uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
 static void present_cfg(const win_t *o) {
     if (g_hz >= 0) return;
     // 間隔模式按遊戲檔案（present_interval，缺省 game）：是否按遊戲設的出圖間隔出幀，取決於遊戲邏輯是否按幀計數，各遊戲不同。環境變量可覆蓋，也可覆蓋固定 60 Hz。
@@ -1266,7 +1272,12 @@ static void present_cfg(const win_t *o) {
 }
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
-    if (o->interval != atomic_load(&g_game_itv)) atomic_store(&g_game_itv, o->interval > 0 ? o->interval : 1);
+    int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;
+    if (want != was) {
+        atomic_store(&g_game_itv, want);
+        if (want < 2) atomic_store(&g_itv2_since, 0);
+        else if (was < 2) atomic_store(&g_itv2_since, now_ns() | 1);   // | 1：起點不會是 0 | | 1: the start is never 0
+    }
     int itv = g_display_mode ? 1 : o->interval > 0 ? o->interval : 1, hz = g_hz;
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
@@ -1279,6 +1290,11 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     { static int gate;
       if (!gate && g_nvn_loadscreen_up && g_nvn_loadscreen_up()) { gate = 1; int ms = mtl_warm_wait(15000); if (ms) LOG("[nvn] 進局讀取畫面等管線預熱 %d ms", ms); } }
     present_cfg(o);
+    {   // 測試開關 DM_TEST_PRESENT_LAG=每 N 次出圖,毫秒：在第 N、2N…次出圖前多睡這麼久，模仿真機偶爾慢一幀（馬力歐 1.2.1 隨後設出圖間隔 2，驗顯示節拍按間隔留拍）。產品不設
+        // Test switch DM_TEST_PRESENT_LAG=every N presents,milliseconds: sleep that long before the Nth, 2Nth… present, imitating an occasional slow frame on a phone (Mario 1.2.1 then sets present interval 2; checks that the display link holds frames by interval). Not set in the product
+        static int lag_n = -1, lag_ms; if (lag_n < 0) { const char *e = getenv("DM_TEST_PRESENT_LAG"); lag_n = 0; if (e && sscanf(e, "%d,%d", &lag_n, &lag_ms) == 2 && lag_n > 0) LOG("DM_TEST_PRESENT_LAG：每 %d 次出圖多睡 %d ms", lag_n, lag_ms); else lag_n = 0; }
+        if (lag_n && o->presents % lag_n == 0) usleep((useconds_t)lag_ms * 1000);
+    }
     gfx_enter();
     uint64_t t0 = now_ns();
     if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // 只入隊，立即返回 | enqueue only, return immediately

@@ -86,6 +86,7 @@ static pthread_cond_t g_link_cv = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t g_link_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_link_tick_ns, g_link_tick_n;
 static uint64_t g_link_dropped;
+static double g_link_hold_until, g_link_prev_target; static uint64_t g_link_held;   // 只在顯示節拍回調線程裡改：上一張按出圖間隔要顯示到的時刻（0 = 不留）、上一拍的目標上屏時刻、因留拍沒取新幀的節拍數（上游 c7e5b57） | Changed only on the display-link callback thread: the time the previous frame must stay on screen until by its present interval (0 = no hold), the previous tick's target time, and the ticks that took no new frame because of the hold (upstream c7e5b57)
 static int g_pq_inflight;   // 持 g_pq_mu：已提交給 GPU、完成回調還沒來的上屏數 | Under g_pq_mu: number of presents committed to the GPU whose completion callback has not arrived yet
 int g_dm_present_link;   // 出圖節拍模式（DM_PRESENT_LINK 的運行時值，同進程交替測量時直接改它）：0 = 自己取 drawable；1 = 顯示節拍 60 Hz；2 = 120 Hz 節拍、遊戲隔拍出一幀 | Present pacing mode (runtime value of DM_PRESENT_LINK, modified directly during same-process alternating measurement): 0 = acquire the drawable itself; 1 = display link at 60 Hz; 2 = display link at 120 Hz, the game presents a frame every other display-link tick
 static int g_present_latency = 1;
@@ -866,6 +867,11 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); mtl_init
 #include "../../host/front.h"
 static int g_red_once[80];
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("【紅】" __VA_ARGS__); } while (0)
+// NVN 頂點流 0–15 → Metal 頂點緩衝槽：0–13 放 16–29（30 是常量回退緩衝），14、15 放 14、15。Metal 只有 0–30 共 31 個槽；翻譯出的著色器只用 buffer(0)（參數緩衝），
+// 宿主自己的頂點函數不讀頂點緩衝。十三機兵防衛圈用到流 15，原先的 16 + 流號越界（Metal 斷言 buffer index (31) must be < 31）（上游 c7e5b57）
+// NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
+// and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31) (upstream c7e5b57)
+#define VB_SLOT(st) ((st) < 14 ? 16 + (st) : (st))
 
 // ---------- 貼圖 → MTLTexture ----------
 // ---------- Texture → MTLTexture ----------
@@ -3025,10 +3031,10 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         }
         int st = k->attr[a].stream;
         vf = vfmt_for_ct(vf, rf->v[v].ct, k->attr[a].fmt);
-        vd.attributes[loc].format = vf; vd.attributes[loc].offset = k->attr[a].offset; vd.attributes[loc].bufferIndex = 16 + st;
-        vd.layouts[16 + st].stride = k->stream[st].stride ? k->stream[st].stride : 4;
-        vd.layouts[16 + st].stepFunction = k->stream[st].stride == 0 ? MTLVertexStepFunctionConstant : k->stream[st].divisor ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
-        vd.layouts[16 + st].stepRate = k->stream[st].stride == 0 ? 0 : k->stream[st].divisor ? k->stream[st].divisor : 1;
+        vd.attributes[loc].format = vf; vd.attributes[loc].offset = k->attr[a].offset; vd.attributes[loc].bufferIndex = VB_SLOT(st);
+        vd.layouts[VB_SLOT(st)].stride = k->stream[st].stride ? k->stream[st].stride : 4;
+        vd.layouts[VB_SLOT(st)].stepFunction = k->stream[st].stride == 0 ? MTLVertexStepFunctionConstant : k->stream[st].divisor ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
+        vd.layouts[VB_SLOT(st)].stepRate = k->stream[st].stride == 0 ? 0 : k->stream[st].divisor ? k->stream[st].divisor : 1;
     }
     d.vertexDescriptor = vd;
     return d;
@@ -3486,6 +3492,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     return 1;
 }
 static id<MTLBuffer> g_quad_ib; static uint64_t g_quad_gpu;
+static id<MTLBuffer> g_fan_ib; static uint64_t g_fan_gpu;   // 無索引三角扇：共享索引 (0, i, i+1)，基頂點 = first | non-indexed triangle fans: shared indices (0, i, i+1), base vertex = first
 static id<MTL4RenderCommandEncoder> rp_begin(void);
 // ---------- 通道前瞻：本通道是否用到深度 / 模板 ----------
 // 開通道時從當前繪製的下一條起往後掃，模擬深度模板狀態的變化，直到本通道必然結束處（重設目標、拷貝、計算派發——
@@ -5172,7 +5179,7 @@ frz_plain:;
         if (!S.vbuf[s_].address) continue;
         void *mb; uint64_t mo;
         uint64_t gpu;
-        if (mtl_gpu_addr(S.vbuf[s_].address, 1, &mb, &mo, &gpu)) { enc_r_vbuf(en, 16 + s_, gpu); use_rec("buf", S.vbuf[s_].address, S.vbuf[s_].size, 0, NULL); }
+        if (mtl_gpu_addr(S.vbuf[s_].address, 1, &mb, &mo, &gpu)) { enc_r_vbuf(en, VB_SLOT(s_), gpu); use_rec("buf", S.vbuf[s_].address, S.vbuf[s_].size, 0, NULL); }
     }
     static id<MTLBuffer> zero; if (!zero) { zero = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(zero); }
     static uint64_t zero_gpu; if (!zero_gpu) zero_gpu = zero.gpuAddress;
@@ -5186,7 +5193,7 @@ frz_plain:;
     MTLPrimitiveType mp;
     switch (prim) {
         case 0: mp = MTLPrimitiveTypePoint; break; case 1: mp = MTLPrimitiveTypeLine; break; case 3: mp = MTLPrimitiveTypeLineStrip; break;
-        case 4: case 7: mp = MTLPrimitiveTypeTriangle; break; case 5: mp = MTLPrimitiveTypeTriangleStrip; break;
+        case 4: case 6: case 7: mp = MTLPrimitiveTypeTriangle; break; case 5: mp = MTLPrimitiveTypeTriangleStrip; break;   // 6 三角扇、7 四邊形：Metal 沒有，展開成三角形列表 | 6 triangle fan, 7 quads: Metal has neither, expanded into triangle lists
         default: RED_ONCE(19, "圖元類型 %d 未實現", prim); return;
     }
     if (g_vis_counting) {   // 遮擋查詢計數：本通道新槽（報告 / 清零後也換新槽） | Occlusion query counting: a new slot for this render pass (also switch to a new slot after a report / reset)
@@ -5264,11 +5271,39 @@ frz_plain:;
             g_quad_ib = [g_dev newBufferWithBytes:ix length:n * 24 options:MTLResourceStorageModeShared]; g_quad_gpu = g_quad_ib.gpuAddress; res_add(g_quad_ib); free(ix);
         }
         if (dw->count >= 4) enc_r_draw_indexed(en, mp, (dw->count / 4) * 6, MTLIndexTypeUInt32, g_quad_gpu, g_quad_ib.length, dw->instances > 0 ? dw->instances : 1, dw->first, dw->base_instance);
+    } else if (dw && prim == 6) {   // 三角扇（十三機兵防衛圈）：(0, i, i+1) 共享索引，first 作基頂點 | triangle fans (13 Sentinels): shared indices (0, i, i+1), first as the base vertex
+        if (!g_fan_ib) {
+            uint32_t n = 65536; uint32_t *ix = malloc(n * 12);
+            for (uint32_t i = 0; i < n; i++) { uint32_t v[3] = {0, i + 1, i + 2}; memcpy(ix + i * 3, v, 12); }
+            g_fan_ib = [g_dev newBufferWithBytes:ix length:n * 12 options:MTLResourceStorageModeShared]; g_fan_gpu = g_fan_ib.gpuAddress; res_add(g_fan_ib); free(ix);
+        }
+        if (dw->count >= 3) enc_r_draw_indexed(en, mp, (dw->count - 2) * 3, MTLIndexTypeUInt32, g_fan_gpu, g_fan_ib.length, dw->instances > 0 ? dw->instances : 1, dw->first, dw->base_instance);
     } else if (dw) {
         if (dw->count && (dw->instances > 1 || dw->base_instance)) enc_r_draw_instanced(en, mp, dw->first, dw->count, dw->instances > 0 ? dw->instances : 1, dw->base_instance);
         else if (dw->count) enc_r_draw(en, mp, dw->first, dw->count);
     } else {
-        if (prim == 7) { RED_ONCE(20, "帶索引的四邊形未實現"); return; }
+        if (prim == 6 || prim == 7) {   // 帶索引的三角扇 / 四邊形（十三機兵防衛圈）：回放時從客體內存讀索引，展開成 32 位三角形列表放進本幀競技場（同 8 位索引）
+                                        // indexed triangle fans / quads (13 Sentinels): at replay the indices are read from guest memory and expanded into a 32-bit triangle list in this frame's arena (as for 8-bit indices)
+            int isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4;
+            uint32_t nt = prim == 7 ? (uint32_t)(di->count / 4) * 2 : di->count >= 3 ? (uint32_t)di->count - 2 : 0;
+            if (!nt) return;
+            void *mb; uint64_t mo; const uint8_t *src;
+            if (!mtl_addr(di->ibuf, (uint64_t)di->count * isz, &mb, &mo) || !(src = [(__bridge id<MTLBuffer>)mb contents])) { RED_ONCE(22, "索引緩衝不在內存池裡"); return; }
+            if (pend_hits(di->ibuf, (uint64_t)di->count * isz)) RED_ONCE(73, "三角扇 / 四邊形索引緩衝本提交裡有 GPU 側寫入：按當前內容展開");
+            src += mo;
+            #define IX(i) (isz == 1 ? (uint32_t)src[i] : isz == 2 ? (uint32_t)((const uint16_t *)src)[i] : ((const uint32_t *)src)[i])
+            id<MTLBuffer> ab; size_t off = arena_alloc(((size_t)nt * 12 + 15) & ~(size_t)15, &ab);
+            uint32_t *d = (uint32_t *)((uint8_t *)ab.contents + off);
+            for (uint32_t t = 0; t < nt; t++) {
+                if (prim == 6) { d[3 * t] = IX(0); d[3 * t + 1] = IX(t + 1); d[3 * t + 2] = IX(t + 2); }
+                else { uint32_t q = (t >> 1) * 4, h = t & 1; d[3 * t] = IX(q); d[3 * t + 1] = IX(q + 1 + h); d[3 * t + 2] = IX(q + 2 + h); }
+            }
+            #undef IX
+            use_rec("buf", di->ibuf, (uint64_t)di->count * isz, 0, NULL);
+            enc_r_draw_indexed(en, mp, nt * 3, MTLIndexTypeUInt32, g_cur_arena->gpu + off, (NSUInteger)nt * 12, di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
+            if (g_rt_range_pending) { PD("j rt_level_range pass=%llu vc=%u", g_stat_pass, (unsigned)di->count); g_rt_range_pending = 0; }
+            return;
+        }
         if (di->itype == 0) {   // 8 位索引：Metal 只有 16 / 32 位。回放時從客體內存讀出、展開成 16 位放進本幀競技場（SMBW 的全屏通道與最後拷進窗口那一下都用 8 位索引，不展開就整屏黑）
                                 // 8-bit indices: Metal only has 16 / 32-bit. At replay they are read from guest memory and widened to 16-bit in this frame's arena (SMBW's full-screen passes and the final copy into the window all use 8-bit indices; without this the whole screen is black)
             if (!di->count) return;
@@ -6635,8 +6670,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
             for (int i = 1; i < 300; i++) { double v = a[i]; int j = i - 1; while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; } a[j + 1] = v; }
             double b[300]; memcpy(b, e2e, sizeof b);
             for (int i = 1; i < 300; i++) { double v = b[i]; int j = i - 1; while (j >= 0 && b[j] > v) { b[j + 1] = b[j]; j--; } b[j + 1] = v; }
-            MLOG("顯示節拍 至 %llu：節拍 300、出圖 %llu、空節拍 %llu、合併丟棄舊幀 %llu；提交領先目標上屏 p50 %.3f ms / 最小 %.3f ms；遊戲入隊到目標上屏 p50 %.3f ms / 最小 %.3f / 最大 %.3f ms",
-                 (unsigned long long)g_link_tick_n, (unsigned long long)g_present_n, (unsigned long long)(g_link_tick_n - g_present_n),
+            MLOG("顯示節拍 至 %llu：節拍 300、出圖 %llu、空節拍 %llu（其中按出圖間隔留拍 %llu）、合併丟棄舊幀 %llu；提交領先目標上屏 p50 %.3f ms / 最小 %.3f ms；遊戲入隊到目標上屏 p50 %.3f ms / 最小 %.3f / 最大 %.3f ms",
+                 (unsigned long long)g_link_tick_n, (unsigned long long)g_present_n, (unsigned long long)(g_link_tick_n - g_present_n), (unsigned long long)g_link_held,
                  (unsigned long long)g_link_dropped, a[149], a[0], b[149], b[0], b[299]);
         }
     }
@@ -6707,7 +6742,18 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     pthread_cond_broadcast(&g_link_cv);
     pthread_mutex_unlock(&g_link_mu);
     pthread_mutex_lock(&g_pq_mu);
+    double tick = g_link_prev_target > 0 ? update.targetPresentationTimestamp - g_link_prev_target : 0; g_link_prev_target = update.targetPresentationTimestamp;
     if (!g_dm_present_link || g_pq_read == g_pq_in) { pthread_mutex_unlock(&g_pq_mu); return; }
+    // 上一張的出圖間隔 ≥ 2（週期 > 25 ms）：顯示滿它的週期再取下一張，同 Switch 的「隔 N 個垂直同步換幀」。節拍檔仍是 60 Hz 時也對（馬力歐 1.2.1 單幀設 2，見 hle_nvn.c nvn_game_fps）；
+    //   原先每拍都取最新一張，這一幀連同遊戲為它多走的一步時間只顯示 16.7 ms，看起來一下快進
+    // The previous frame's present interval was >= 2 (period > 25 ms): keep it on screen for its whole period before taking the next one, as the Switch flips only every N vertical syncs. This also holds while the link runs at 60 Hz (Mario 1.2.1 sets 2 for single frames, see nvn_game_fps in hle_nvn.c);
+    //   before, every tick took the newest frame, so that frame, carrying the extra time step the game advanced for it, was shown for only 16.7 ms and the game looked like it jumped ahead
+    // 門檻取半個節拍間隔（上游固定 2 ms）：ProMotion 屏上 30 Hz 節拍的目標時刻按 8.33 ms 跳動（25 / 33 / 42 ms），固定門檻把提早 8 ms 的拍也留下，
+    //   新幀在隊裡等到下一拍時又來一幀，舊的被合併丟掉（朋友收集 30 幀、Mac 窗口：每 300 拍多丟約 7 幀）。60 Hz 節拍下單幀間隔 2 照樣留滿一拍
+    // The threshold is half a tick interval (upstream uses a fixed 2 ms): on a ProMotion display a 30 Hz link's target times move in 8.33 ms steps (25 / 33 / 42 ms), and a fixed threshold also held ticks that came 8 ms early;
+    //   the queued frame then waited for the next tick, another frame arrived, and the older one was merged away (Tomodachi Life at 30 fps in a Mac window: about 7 more dropped frames per 300 ticks). On a 60 Hz link a single interval-2 frame is still held for a whole tick
+    double slack = tick > 0.004 ? tick / 2 : 0.002;
+    if (g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - slack) { g_link_held++; pthread_mutex_unlock(&g_pq_mu); return; }
     uint64_t first = g_pq_read + 1, ticket = g_pq_in;
     pq_item it = g_pq[(g_pq_in - 1) % PQ]; g_link_it_tin = it.t_in;
     g_pq_read = g_pq_in;
@@ -6717,6 +6763,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
     @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp); }
+    g_link_hold_until = submitted && it.period > 0.025 ? update.targetPresentationTimestamp + it.period : 0;
     if (!submitted) {
         pthread_mutex_lock(&g_pq_mu);
         if (ticket > g_pq_done) g_pq_done = ticket;
