@@ -57,7 +57,7 @@ extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 extern pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui, g_keyresf, g_keyband;
 
 void load_modules(const char *dir, const char **names, int n);
-int dm_option_known(const char *name);   // 這個遊戲的 options.tsv 裡有沒有這個可選剪口（只在 Mac 裝載路徑上記；iOS 恆 0） | whether this game's options.tsv lists the optional cut (recorded only on the Mac load path; always 0 on iOS)
+int dm_option_known(const char *name);   // 這個遊戲有沒有這個可選剪口（Mac：options.tsv；iOS：內嵌的剪口表）。模塊裝好後才準 | whether this game has the optional cut (Mac: options.tsv; iOS: the embedded cut table). Valid once the modules are loaded
 void run_module_inits(void);
 void *module_sym(module_t *m, const char *name);
 void *guest_sym(const char *name);

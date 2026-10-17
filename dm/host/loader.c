@@ -338,9 +338,15 @@ void loader_hash_log(void) {
     }
 }
 
-// 可選剪口的選項名表（apply_options 填；iOS 不填，恆為空） | option names of the optional cuts (filled by apply_options; not filled on iOS, always empty)
+// 可選剪口的選項名表（Mac：apply_options 讀 options.tsv 時填；iOS：map_text 讀內嵌的剪口表時填） | option names of the optional cuts (Mac: filled by apply_options from options.tsv; iOS: filled by map_text from the embedded cut table)
 static char g_opt_known[16][32] __attribute__((unused)); static int g_nopt_known;
 int dm_option_known(const char *name) { for (int i = 0; i < g_nopt_known; i++) if (!strcmp(g_opt_known[i], name)) return 1; return 0; }
+static void option_note(const char *name) { if (!dm_option_known(name) && g_nopt_known < 16) strlcpy(g_opt_known[g_nopt_known++], name, sizeof g_opt_known[0]); }
+static int option_wanted(const char *name) {
+    const char *e = getenv("DM_OPTIONS"); size_t n = strlen(name);
+    for (const char *q = e; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) if (!strncmp(q, name, n) && (q[n] == ',' || !q[n])) return 1;
+    return 0;
+}
 #if TARGET_OS_IPHONE
 // iOS 不許運行時裝入的代碼執行，且蘋果只許可執行文件有一個帶執行權限的段（ITMS-90999）：映像由 dm/ios/tools/gen_embed.py 編進本可執行文件——
 // 代碼兩塊（原 text、補丁區）是 __TEXT 裡的節，W（ro 餘部 + data + bss）是單獨的 RW 段。三塊在文件裡不相鄰；這裡保留一塊連續地址，
@@ -377,6 +383,40 @@ static const struct mach_header_64 *image_mh(void) {
 #else
 #define IMAGE_MH (&_mh_execute_header)
 #endif
+#ifndef DM_SHELL
+// 可選剪口（iOS）：gen_embed.py 把套上剪口後的整頁另編進 __TEXT，表 dm_embed_opts 列出（選項、模塊、頁偏移、內嵌頁，名為空結束）。
+// 代碼區（x0）分段 remap：DM_OPTIONS 要的選項，那一頁的來源換成內嵌的已套版，其餘照舊取原 text——同樣是已簽名的頁，不必寫代碼頁；兩種版本都在包裡，開機時挑。
+// 不能先整段映好再把那頁蓋上去：iOS 不許 remap 蓋在已可執行的映射上（KERN_PROTECTION_FAILURE，iPad 實測，開機即崩）。換頁失敗就退回原頁、報紅，照 30 FPS 開機
+// Optional cuts (iOS): gen_embed.py compiles each page with a cut applied into __TEXT as well, listed in the table dm_embed_opts (option, module, page offset, embedded page; ended by an empty name).
+// The code area (x0) is remapped in pieces: for options DM_OPTIONS asks for, that page comes from the embedded patched copy and the rest from the original text -- signed pages either way, with no writes to code pages; both versions ship, picked at boot.
+// Mapping the whole range first and laying the page over it afterwards does not work: iOS refuses a remap over an executable mapping (KERN_PROTECTION_FAILURE, seen on an iPad, crashing at boot). If swapping a page fails, the original page goes there instead with a red log line, and the game boots at 30 FPS
+typedef struct { const char *name, *mod; uint64_t off; const uint8_t *page; } embed_opt_t;
+extern const embed_opt_t dm_embed_opts[];
+static void map_text(module_t *m, vm_address_t base, const uint8_t *x0, unsigned long z0) {
+    const embed_opt_t *want[32]; int n = 0;
+    for (const embed_opt_t *o = dm_embed_opts; o->name; o++) {
+        if (strcmp(o->mod, m->name)) continue;
+        option_note(o->name);
+        if (!option_wanted(o->name) || o->off + 0x4000 > z0 || (o->off & 0x3FFF) || n == 32) continue;
+        int i = n++; while (i > 0 && want[i - 1]->off > o->off) { want[i] = want[i - 1]; i--; } want[i] = o;   // 按偏移排 | sorted by offset
+    }
+    unsigned long done = 0;
+    for (int i = 0; i < n; i++) {
+        const embed_opt_t *o = want[i]; if (o->off < done) continue;
+        if (o->off > done) remap_at(m, base + done, x0 + done, o->off - done, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+        vm_address_t a = base + o->off; vm_prot_t cur = 0, max = 0;
+        kern_return_t kr = vm_remap(mach_task_self(), &a, 0x4000, 0, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), (vm_address_t)o->page, FALSE, &cur, &max, VM_INHERIT_NONE);
+        if (kr == KERN_SUCCESS && a == base + o->off && (cur & (VM_PROT_READ | VM_PROT_EXECUTE)) == (VM_PROT_READ | VM_PROT_EXECUTE))
+            LOG("可選剪口 %s：%s+%#llx 這一頁取內嵌的已套版", o->name, m->name, (unsigned long long)o->off);
+        else {
+            LOG("【紅】可選剪口 %s：%s+%#llx 換頁失敗（vm_remap %d，權限 %#x），這一頁用原版、不套", o->name, m->name, (unsigned long long)o->off, kr, cur);
+            remap_at(m, base + o->off, x0 + o->off, 0x4000, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+        }
+        done = o->off + 0x4000;
+    }
+    if (done < z0) remap_at(m, base + done, x0 + done, z0 - done, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+}
+#endif
 static void map_image(module_t *m, const char *dir) {
     (void)dir;
     char sx0[17], sx1[17], dm[17]; snprintf(sx0, sizeof sx0, "__dm%sx0", m->name); snprintf(sx1, sizeof sx1, "__dm%sx1", m->name); snprintf(dm, sizeof dm, "__DM%sW", m->name);
@@ -394,7 +434,11 @@ static void map_image(module_t *m, const char *dir) {
     vm_address_t base = 0;
     if (vm_allocate(mach_task_self(), &base, pre + m->size, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) die("%s 保留 %#llx 字節地址失敗", m->name, (unsigned long long)(pre + m->size));
     base += pre;
+#ifndef DM_SHELL
+    map_text(m, base, x0, z0);   // 代碼區，可選剪口的頁在這裡換 | the code area, with optional-cut pages swapped in here
+#else
     remap_at(m, base, x0, z0, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+#endif
     remap_at(m, base + z0, w, zw, TRUE, VM_PROT_READ | VM_PROT_WRITE);
     remap_at(m, base + m->patch_off, x1, z1, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
     m->base = (uint8_t *)base; install_key_page(m);
@@ -417,11 +461,6 @@ static uint8_t *slurp(const char *path, size_t *n) {
 // 每條先核原字節（不符報紅、不套）。表裡出現過的選項名都記下，前端據此決定顯示哪些開關（dm_option_known）
 // Optional cuts (patch_nso.py OPTIONS -> <name>.options.tsv, columns: option, offset, original bytes, new bytes, reason): DM_OPTIONS = comma-separated option names, applied before the code area is sealed,
 // each one checking the original bytes first (a mismatch is reported and not applied). Every option name seen in the table is remembered, and the front end shows only those switches (dm_option_known)
-static int option_wanted(const char *name) {
-    const char *e = getenv("DM_OPTIONS"); size_t n = strlen(name);
-    for (const char *q = e; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) if (!strncmp(q, name, n) && (q[n] == ',' || !q[n])) return 1;
-    return 0;
-}
 static int hexbytes(const char *h, uint8_t *out, size_t cap) {
     size_t n = strlen(h); if (n % 2 || n / 2 > cap) return -1;
     for (size_t i = 0; i < n / 2; i++) { unsigned v; if (sscanf(h + 2 * i, "%2x", &v) != 1) return -1; out[i] = (uint8_t)v; }
@@ -433,7 +472,7 @@ static void apply_options(module_t *m, const char *dir) {
     while (fgets(line, sizeof line, f)) {
         char name[32], ob[64], nb[64]; unsigned long long off; uint8_t o[32], w[32];
         if (line[0] == '#' || sscanf(line, "%31[^\t]\t%llx\t%63[^\t]\t%63[^\t\n]", name, &off, ob, nb) != 4) continue;
-        if (!dm_option_known(name) && g_nopt_known < 16) strlcpy(g_opt_known[g_nopt_known++], name, sizeof g_opt_known[0]);
+        option_note(name);
         if (!option_wanted(name)) continue;
         int n = hexbytes(ob, o, sizeof o);
         if (n <= 0 || hexbytes(nb, w, sizeof w) != n || off + (unsigned)n > m->size) { LOG("【紅】可選剪口 %s：%s+%#llx 這一行格式不對，不套", name, m->name, off); continue; }
