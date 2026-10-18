@@ -2,12 +2,13 @@
 
 # Tomodachi Native
 
-**Tomodachi Life: Living the Dream as a native app for Apple Silicon Macs.** iPhone and iPad come next.
+**Tomodachi Life: Living the Dream as a native app for Apple Silicon Macs and iPads.** It also builds for iPhone, but has not run on one yet.
 
-The game's own ARM64 code runs directly on the Mac's chip; the Switch's system services and graphics are rebuilt on macOS and Metal 4.
+The game's own ARM64 code runs directly on the device's Apple chip; the Switch's system services and graphics are rebuilt on macOS, iOS and Metal 4.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-f4c430?style=flat-square)](LICENSE)
 [![macOS 26+](https://img.shields.io/badge/macOS-26%2B-000000?style=flat-square&logo=apple&logoColor=white)](#mac-app)
+[![iOS and iPadOS 26+](https://img.shields.io/badge/iOS%20%7C%20iPadOS-26%2B-000000?style=flat-square&logo=apple&logoColor=white)](#install-on-your-own-iphone-or-ipad)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-555555?style=flat-square)](#how-it-works)
 [![Fork of nxnative](https://img.shields.io/badge/fork%20of-nxnative-6e5494?style=flat-square&logo=github)](https://github.com/seedds/smbw-mobile)
 
@@ -18,7 +19,7 @@ The game's own ARM64 code runs directly on the Mac's chip; the Switch's system s
 > [!IMPORTANT]
 > This repository contains no game files, keys or other Nintendo content. You need your own copy of the game (its NSP files) and your own `prod.keys`, dumped from a console you own. The project is not affiliated with Nintendo.
 
-This is a fork of [nxnative](https://github.com/seedds/smbw-mobile) by seedds, which runs Switch games natively on Apple devices. This fork focuses on Tomodachi Life: it adds the game's profile, the SDK 20 support it needs, and a Mac app built around it.
+This is a fork of [nxnative](https://github.com/seedds/smbw-mobile) by seedds, which runs Switch games natively on Apple devices. This fork focuses on Tomodachi Life: it adds the game's profile, the SDK 20 support it needs, and apps for the Mac and for iPhone and iPad.
 
 ## Status
 
@@ -40,6 +41,8 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 ```
 
 3. Open **Tomodachi Life** from Applications.
+
+On an iPhone or iPad, see [Install on your own iPhone or iPad](#install-on-your-own-iphone-or-ipad).
 
 ## The Mac app
 
@@ -64,9 +67,11 @@ Details per part are in [How it works in detail](#how-it-works-in-detail).
 
 **Which Macs?** Apple Silicon on macOS 26 or later (the graphics layer uses Metal 4). It is developed on macOS 27; macOS 26 is the build target but has not been tried.
 
-**Where are my saves?** In `~/Library/Application Support/nxnative/010051F0207B2000/save`. Copy that folder to back them up.
+**Which iPhones and iPads?** iOS or iPadOS 26 or later, on a chip with Metal 4 (A14 or M1 and later). It has run on an iPad Air 11-inch (M2) on iPadOS 27. It also builds for iPhone, including iPhone Duo, but has not run on one yet.
 
-**Can I use a controller?** Not on the Mac yet: keyboard, mouse and trackpad for now.
+**Where are my saves?** On the Mac, in `~/Library/Application Support/nxnative/010051F0207B2000/save`; copy that folder to back them up. On an iPhone or iPad, press HOME to open the settings, where you can back them up or export them to the Files app.
+
+**Can I use a controller?** On an iPhone or iPad, yes: a paired controller works alongside the on-screen buttons. Not on the Mac yet: use the keyboard, mouse and trackpad.
 
 **Will other games come?** This fork covers Tomodachi Life only. Super Mario Bros. Wonder and Fire Emblem Engage run with [nxnative](https://github.com/seedds/smbw-mobile), the project this fork continues. To bring up another game, see [Port another game](#port-another-game).
 

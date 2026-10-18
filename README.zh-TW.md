@@ -2,12 +2,13 @@
 
 # Tomodachi Native
 
-**在 Apple Silicon 的 Mac 上直接玩《朋友收集 夢想生活》。** iPhone 和 iPad 版之後會做。
+**在 Apple Silicon 的 Mac 和 iPad 上直接玩《朋友收集 夢想生活》。** 也能編成 iPhone 版，但還沒在 iPhone 上跑過。
 
-遊戲原本的 ARM64 程式直接在 Mac 的晶片上執行，Switch 的系統服務和繪圖則用 macOS 與 Metal 4 重新做了一套。
+遊戲原本的 ARM64 程式直接在裝置的 Apple 晶片上執行，Switch 的系統服務和繪圖則用 macOS、iOS 與 Metal 4 重新做了一套。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-f4c430?style=flat-square)](LICENSE)
 [![macOS 26+](https://img.shields.io/badge/macOS-26%2B-000000?style=flat-square&logo=apple&logoColor=white)](README.md#mac-app)
+[![iOS and iPadOS 26+](https://img.shields.io/badge/iOS%20%7C%20iPadOS-26%2B-000000?style=flat-square&logo=apple&logoColor=white)](#裝到自己的-iphone-或-ipad)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-555555?style=flat-square)](README.md#how-it-works)
 [![Fork of nxnative](https://img.shields.io/badge/fork%20of-nxnative-6e5494?style=flat-square&logo=github)](https://github.com/seedds/smbw-mobile)
 
@@ -18,7 +19,7 @@
 > [!IMPORTANT]
 > 這裡沒有附任何遊戲檔、金鑰或任天堂的素材。你需要準備從自己的 Switch 匯出的遊戲檔（NSP）和 `prod.keys`。本專案和任天堂沒有任何關係。
 
-這個專案 fork 自 seedds 的 [nxnative](https://github.com/seedds/smbw-mobile)，nxnative 讓 Switch 遊戲直接在 Apple 裝置上執行。這個版本專注在《朋友收集 夢想生活》：加上這款遊戲的設定檔、它需要的 SDK 20 支援，以及專為它做的 Mac app。
+這個專案 fork 自 seedds 的 [nxnative](https://github.com/seedds/smbw-mobile)，nxnative 讓 Switch 遊戲直接在 Apple 裝置上執行。這個版本專注在《朋友收集 夢想生活》：加上這款遊戲的設定檔、它需要的 SDK 20 支援，以及專為它做的 Mac 版和 iPhone、iPad 版 App。
 
 ## 目前進度
 
@@ -103,9 +104,11 @@ python3 scripts/build_mac_app.py 010051F0207B2000 -w ~/010051F0207B2000-work -o 
 
 **哪些 Mac 能玩？** 搭載 Apple Silicon、macOS 26 以上（繪圖用到 Metal 4）。目前在 macOS 27 上開發；macOS 26 有支援，但還沒實際試過。
 
-**存檔在哪裡？** `~/Library/Application Support/nxnative/010051F0207B2000/save`，想備份就複製這個資料夾。
+**哪些 iPhone、iPad 能玩？** iOS 或 iPadOS 26 以上，晶片要支援 Metal 4（A14、M1 以後）。目前在 iPad Air 11 吋（M2）、iPadOS 27 上跑過；也能編成 iPhone 版（含 iPhone Duo），但還沒在 iPhone 上跑過。
 
-**可以接手把嗎？** Mac 版目前還不支援手把，先用鍵盤、滑鼠和觸控板。
+**存檔在哪裡？** Mac 上在 `~/Library/Application Support/nxnative/010051F0207B2000/save`，想備份就複製這個資料夾。iPhone、iPad 上按 HOME 打開設定，就能備份存檔或匯出到「檔案」App。
+
+**可以接手把嗎？** iPhone、iPad 可以，配對好的手把和螢幕上的按鍵能同時用。Mac 版目前還不支援，先用鍵盤、滑鼠和觸控板。
 
 **之後會支援其他遊戲嗎？** 這個版本只做《朋友收集》。想玩《超級瑪利歐兄弟 驚奇》或《聖火降魔錄 Engage》，請用原本的 [nxnative](https://github.com/seedds/smbw-mobile)。想自己移植別的遊戲，見英文版的 [Port another game](README.md#port-another-game)。
 
