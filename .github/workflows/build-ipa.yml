@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 360
 
     steps:
@@ -31,22 +31,35 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install lz4 capstone fonttools google-api-python-client google-auth
 
+      - name: Update shader toolchain lock for this runner
+        env:
+          DM_GAME: "010051F0207B2000"
+        run: |
+          python3 dm/gfx/tools/dmsh_chain.py --update-lock
+          python3 dm/gfx/tools/dmsh_chain.py --header
+
       - name: Diagnose shader toolchain
         run: |
           echo "=== macOS ==="
           sw_vers
+
           echo "=== Xcode ==="
           xcodebuild -version
+
           echo "=== Metal compiler ==="
           xcrun -sdk macosx metal --version
           xcrun -sdk iphoneos metal --version
+
           echo "=== SPIRV-Cross ==="
           which spirv-cross
           shasum -a 256 "$(which spirv-cross)"
+
+          echo "=== Verify shader toolchain ==="
+          DM_GAME=010051F0207B2000 python3 dm/gfx/tools/dmsh_chain.py --check-tools
+
           echo "=== Shader translator files ==="
           find dm -type f -name 'dmsh_xlate' -print
           find dm -type f -name 'dmsh_xlate.dll' -print
-          find dm -type f -name 'dmsh_chain.lock' -print
 
       - name: Download game from private Google Drive
         env:
