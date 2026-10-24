@@ -35,24 +35,18 @@ steps:
     run: |
       echo "=== macOS ==="
       sw_vers
-
       echo "=== Xcode ==="
       xcodebuild -version
-
       echo "=== Metal compiler ==="
       xcrun -sdk macosx metal --version
       xcrun -sdk iphoneos metal --version
-
       echo "=== SPIRV-Cross ==="
       which spirv-cross
       shasum -a 256 "$(which spirv-cross)"
-
       echo "=== Shader translator files ==="
-      find dm -type f \
-        -name 'dmsh_xlate' -o \
-        -name 'dmsh_xlate.dll' -o \
-        -name 'dmsh_chain.lock' \
-      -print
+      find dm -type f -name 'dmsh_xlate' -print
+      find dm -type f -name 'dmsh_xlate.dll' -print
+      find dm -type f -name 'dmsh_chain.lock' -print
 
   - name: Download game from private Google Drive
     env:
@@ -67,25 +61,17 @@ steps:
       from googleapiclient.discovery import build
       from googleapiclient.http import MediaIoBaseDownload
 
-      credentials_info = json.loads(
-          os.environ["GDRIVE_SERVICE_ACCOUNT_JSON"]
-      )
+      credentials_info = json.loads(os.environ["GDRIVE_SERVICE_ACCOUNT_JSON"])
       credentials = service_account.Credentials.from_service_account_info(
           credentials_info,
           scopes=["https://www.googleapis.com/auth/drive.readonly"],
       )
 
-      drive = build(
-          "drive", "v3",
-          credentials=credentials,
-          cache_discovery=False,
-      )
-
+      drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
       file_id = os.environ["GDRIVE_FILE_ID"]
 
       metadata = drive.files().get(
-          fileId=file_id,
-          fields="name,mimeType",
+          fileId=file_id, fields="name,mimeType"
       ).execute()
 
       output_dir = Path("game_files")
@@ -93,11 +79,9 @@ steps:
       output_path = output_dir / Path(metadata["name"]).name
 
       request = drive.files().get_media(fileId=file_id)
-
       with output_path.open("wb") as file:
           downloader = MediaIoBaseDownload(file, request)
           done = False
-
           while not done:
               status, done = downloader.next_chunk()
               if status:
@@ -114,7 +98,6 @@ steps:
         echo "PROD_KEYS secret is missing"
         exit 1
       }
-
       printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/prod.keys"
       chmod 600 "$RUNNER_TEMP/prod.keys"
 
