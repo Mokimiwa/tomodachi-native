@@ -1,105 +1,135 @@
-
 name: Build Tomodachi IPA
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
 
 permissions:
-  contents: read
+contents: read
 
 jobs:
-  build:
-    runs-on: macos-26
-    timeout-minutes: 360
+build:
+runs-on: macos-26
+timeout-minutes: 360
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
+steps:
+  - name: Check out repository
+    uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+  - name: Set up Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.12"
 
-      - name: Set up .NET 10
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
+  - name: Set up .NET 10
+    uses: actions/setup-dotnet@v4
+    with:
+      dotnet-version: "10.0.x"
 
-      - name: Install build tools
-        run: |
-          brew install xcodegen zstd spirv-cross
-          python -m pip install --upgrade pip
-          python -m pip install lz4 capstone fonttools google-api-python-client google-auth
+  - name: Install build tools
+    run: |
+      brew install xcodegen zstd spirv-cross
+      python -m pip install --upgrade pip
+      python -m pip install lz4 capstone fonttools google-api-python-client google-auth
 
-      - name: Download game from private Google Drive
-        env:
-          GDRIVE_FILE_ID: ${{ vars.GDRIVE_FILE_ID }}
-          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          from google.oauth2 import service_account
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaIoBaseDownload
+  - name: Diagnose shader toolchain
+    run: |
+      echo "=== macOS ==="
+      sw_vers
 
-          credentials_info = json.loads(
-              os.environ["GDRIVE_SERVICE_ACCOUNT_JSON"]
-          )
-          credentials = service_account.Credentials.from_service_account_info(
-              credentials_info,
-              scopes=["https://www.googleapis.com/auth/drive.readonly"],
-          )
+      echo "=== Xcode ==="
+      xcodebuild -version
 
-          drive = build("drive", "v3", credentials=credentials,
-                        cache_discovery=False)
-          file_id = os.environ["GDRIVE_FILE_ID"]
+      echo "=== Metal compiler ==="
+      xcrun -sdk macosx metal --version
+      xcrun -sdk iphoneos metal --version
 
-          metadata = drive.files().get(
-              fileId=file_id, fields="name,mimeType"
-          ).execute()
+      echo "=== SPIRV-Cross ==="
+      which spirv-cross
+      shasum -a 256 "$(which spirv-cross)"
 
-          output_dir = Path("game_files")
-          output_dir.mkdir(exist_ok=True)
-          output_path = output_dir / Path(metadata["name"]).name
+      echo "=== Shader translator files ==="
+      find dm -type f \
+        -name 'dmsh_xlate' -o \
+        -name 'dmsh_xlate.dll' -o \
+        -name 'dmsh_chain.lock' \
+      -print
 
-          request = drive.files().get_media(fileId=file_id)
-          with output_path.open("wb") as file:
-              downloader = MediaIoBaseDownload(file, request)
-              done = False
-              while not done:
-                  status, done = downloader.next_chunk()
-                  if status:
-                      print(f"Download progress: {status.progress():.0%}")
+  - name: Download game from private Google Drive
+    env:
+      GDRIVE_FILE_ID: ${{ vars.GDRIVE_FILE_ID }}
+      GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+    run: |
+      python - <<'PY'
+      import json
+      import os
+      from pathlib import Path
+      from google.oauth2 import service_account
+      from googleapiclient.discovery import build
+      from googleapiclient.http import MediaIoBaseDownload
 
-          print(f"Downloaded game file: {output_path.name}")
-          PY
+      credentials_info = json.loads(
+          os.environ["GDRIVE_SERVICE_ACCOUNT_JSON"]
+      )
+      credentials = service_account.Credentials.from_service_account_info(
+          credentials_info,
+          scopes=["https://www.googleapis.com/auth/drive.readonly"],
+      )
 
-      - name: Prepare prod.keys
-        env:
-          PROD_KEYS: ${{ secrets.PROD_KEYS }}
-        run: |
-          test -n "$PROD_KEYS" || {
-            echo "PROD_KEYS secret is missing"
-            exit 1
-          }
-          printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/prod.keys"
-          chmod 600 "$RUNNER_TEMP/prod.keys"
+      drive = build(
+          "drive", "v3",
+          credentials=credentials,
+          cache_discovery=False,
+      )
 
-      - name: Build IPA
-        run: |
-          python3 scripts/build_ipa_from_nsp.py \
-            "$GITHUB_WORKSPACE/game_files" \
-            -k "$RUNNER_TEMP/prod.keys" \
-            -o "$RUNNER_TEMP/Tomodachi.ipa" \
-            --app-name "Tomodachi"
+      file_id = os.environ["GDRIVE_FILE_ID"]
 
-      - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Tomodachi-IPA
-          path: ${{ runner.temp }}/Tomodachi.ipa
-          if-no-files-found: error
-          retention-days: 3
+      metadata = drive.files().get(
+          fileId=file_id,
+          fields="name,mimeType",
+      ).execute()
+
+      output_dir = Path("game_files")
+      output_dir.mkdir(exist_ok=True)
+      output_path = output_dir / Path(metadata["name"]).name
+
+      request = drive.files().get_media(fileId=file_id)
+
+      with output_path.open("wb") as file:
+          downloader = MediaIoBaseDownload(file, request)
+          done = False
+
+          while not done:
+              status, done = downloader.next_chunk()
+              if status:
+                  print(f"Download progress: {status.progress():.0%}")
+
+      print(f"Downloaded game file: {output_path.name}")
+      PY
+
+  - name: Prepare prod.keys
+    env:
+      PROD_KEYS: ${{ secrets.PROD_KEYS }}
+    run: |
+      test -n "$PROD_KEYS" || {
+        echo "PROD_KEYS secret is missing"
+        exit 1
+      }
+
+      printf '%s' "$PROD_KEYS" > "$RUNNER_TEMP/prod.keys"
+      chmod 600 "$RUNNER_TEMP/prod.keys"
+
+  - name: Build IPA
+    run: |
+      python3 scripts/build_ipa_from_nsp.py \
+        "$GITHUB_WORKSPACE/game_files" \
+        -k "$RUNNER_TEMP/prod.keys" \
+        -o "$RUNNER_TEMP/Tomodachi.ipa" \
+        --app-name "Tomodachi"
+
+  - name: Upload IPA artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: Tomodachi-IPA
+      path: ${{ runner.temp }}/Tomodachi.ipa
+      if-no-files-found: error
+      retention-days: 3
